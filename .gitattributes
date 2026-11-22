@@ -1,0 +1,11 @@
+# Normalize text files to LF so the repository works the same on Windows,
+# Linux and macOS. Binary artifacts are never converted.
+* text=auto eol=lf
+*.pem text eol=lf
+*.bin binary
+*.mpy binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary

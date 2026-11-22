@@ -1,0 +1,37 @@
+.venv/
+# Local build output and board backups may contain logs or device state.
+build/
+backups/
+__pycache__/
+*.py[cod]
+*.mpy
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+*.log
+
+# Local editor, OS and environment files.
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+.env
+.env.*
+.claude/settings.local.json
+
+# Generated artifacts and firmware images.
+dist/
+*.bin
+*.bak
+*.tmp
+*.orig
+*.rej
+logs/
+serial-*.txt
+
+# Never version real device configuration or credentials.
+config.json
+secrets.json
+device/config.json
+device/secrets.json

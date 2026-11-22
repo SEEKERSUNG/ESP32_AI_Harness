@@ -1,0 +1,6 @@
+mpremote>=1.22
+pyserial>=3.5
+mpy-cross==1.29.0.post2
+
+# Only needed for explicit firmware updates; not used by normal deployment.
+# esptool>=4.7
