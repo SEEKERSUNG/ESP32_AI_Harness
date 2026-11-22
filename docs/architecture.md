@@ -40,7 +40,7 @@ ESP32-S3 的 PSRAM 使完整 Harness 环境下重新建立 TLS 连接不再受�
 
 ## 持久化上下文
 
-`conversation.py` 把已提交的 `history` 和压缩摘要原子写入 `/state/conversation.json`（临时文件 + rename）。只保存 user/assistant 文本、可选的 `kind` 标记和摘要，不保存 pending 代码、系统提示词、工具中间消息或秘密配置。写入发生在每次成功提交模型响应、执行观察、本地记录和压缩之后；重试耗尽、工具/回合上限、用户取消等失败结束也会保存本轮已产生的用户消息、工具结果和一条“本轮未完成”说明，避免停止点附近的上下文丢失，不在流式 token 级别写盘，避免 Flash 磨损。
+`conversation.py` 把已提交的 `history`、压缩摘要和首个用户请求锚点原子写入 `/state/conversation.json`（临时文件 + rename）。只保存 user/assistant 文本、assistant 的可选 reasoning（每条最多 4096 字符）、可选的 `kind` 标记、摘要和 `original_request`，不保存 pending 代码、系统提示词或秘密配置。写入发生在每次成功提交模型响应、执行观察、本地记录和压缩之后；重试耗尽、工具/回合上限、用户取消等失败结束也会保存本轮已产生的用户消息、工具结果和一条“本轮未完成”说明，避免停止点附近的上下文丢失，不在流式 token 级别写盘，避免 Flash 磨损。
 
 `kind` 区分真实用户输入（`user`）、助手回复（`assistant`）和 Harness 插入的本地观察（`observation`），使网页只给真实用户消息提供回退按钮，并让 `/undo` 不会把工具结果当成用户回合。旧文件没有 `kind` 时按已知的 `Local ...`、失败说明等前缀推断。
 
@@ -76,7 +76,7 @@ Web 线程和后台 worker 绝不调用 `os.dupterm` 或 `machine.reset`；需�
 - `summary_timeout=300`：摘要请求最低超时（秒），用于响应头等待和非流式回退，实际取它与流式 `stream_header_timeout` 的较大值；流式正文仍按字节/事件空闲超时；
 - `summary_max_tokens=2048`：摘要输出上限。
 
-自动压缩在每次请求前检查。达到阈值时，Agent 用最近消息之外的较早历史（必要时合并旧摘要）发起一次流式摘要请求，临时关闭 thinking；成功后删除被压缩的消息，把摘要放入系统提示词，并保留最近消息。摘要请求输入限定在 `summary_input_chars`（默认 120000）字符窗口内，输出达到 `summary_max_tokens` 时接受截断摘要；压缩失败不会阻断当前请求，仍由常规裁剪保证不超过上下文预算。`/compact` 手动触发同一流程，`/context` 显示估算值，`/summary` 查看摘要。
+自动压缩在每次请求前检查。达到阈值时，Agent 用最近消息之外的较早历史（必要时合并旧摘要）发起一次流式摘要请求，临时关闭 thinking；成功后删除被压缩的消息，把摘要放入系统提示词，并保留最近消息。首个真实用户请求会作为 `original_request` 持久化并始终注入系统提示词（标注为会话锚点、数据而非新指令），因此压缩或重启后模型仍能看到会话最初的目标；旧版 conversation.json 没有该字段时，恢复阶段会从当前历史中最早的真实用户消息推导。摘要请求输入限定在 `summary_input_chars`（默认 120000）字符窗口内，输出达到 `summary_max_tokens` 时接受截断摘要；压缩失败不会阻断当前请求，仍由常规裁剪保证不超过上下文预算。`/compact` 手动触发同一流程，`/context` 显示估算值，`/summary` 查看摘要。
 
 ## Skills、内置工具与 MEMORY.md
 

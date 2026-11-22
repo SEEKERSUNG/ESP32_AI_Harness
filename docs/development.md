@@ -81,7 +81,7 @@ python tools/check.py --quick
 python tools/check.py --tests tests.test_agent tests.test_conversation -k ask
 ```
 
-`tools/check.py` 等价于 `compileall device tools tests` 加对应的 `unittest` 命令，不访问设备。当前有 516 项主机测试。主机依赖和与固件 `_mpy` 匹配的 `mpy-cross`：
+`tools/check.py` 等价于 `compileall device tools tests` 加对应的 `unittest` 命令，不访问设备。当前有 518 项主机测试。主机依赖和与固件 `_mpy` 匹配的 `mpy-cross`：
 
 ```powershell
 python -m venv .venv

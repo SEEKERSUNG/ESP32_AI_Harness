@@ -84,7 +84,7 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("function startLivePoll", APP_JS)
         self.assertIn("function pollLive", APP_JS)
         self.assertIn("/api/live", APP_JS)
-        self.assertIn("flushObservations", APP_JS)
+        self.assertIn("renderObservation", APP_JS)
         self.assertIn("后台运行", APP_JS)
         self.assertIn(".background-card", APP_CSS)
         self.assertIn(".background-job", APP_CSS)
@@ -126,7 +126,15 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("function scrollIfStick", APP_JS)
         self.assertIn("var stick=pageNearBottom();", APP_JS)
         self.assertIn("scrollIfStick(stick)", APP_JS)
-        self.assertIn("Keep the turn's thinking drawer", APP_JS)
+        self.assertIn("Start a new step inside the same outer turn card", APP_JS)
+        self.assertIn("turn-card", APP_JS)
+        self.assertIn("function startTurn", APP_JS)
+        self.assertIn("message.reasoning", APP_JS)
+
+    def test_tool_only_rounds_do_not_create_empty_answer_bubbles(self):
+        self.assertIn("A tool-only round has no answer text", APP_JS)
+        self.assertIn("if(ev.ok && !ev.error) return;", APP_JS)
+        self.assertIn("if(!ev.text) return;", APP_JS)
 
     def test_auto_toggle_is_confirmed_and_preserves_feedback(self):
         self.assertIn("function changeAuto", APP_JS)
@@ -144,7 +152,7 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("appendDetails(label+'（接收中）'", APP_JS)
         for summary in (
             "查看代码", "查看执行输出", "查看完整提案",
-            "本地执行/工具记录", "工具结果:",
+            "工具结果", "执行结果", "Harness 记录",
         ):
             self.assertIn(summary, APP_JS)
         self.assertIn("openStates[detailIndex]===true", APP_JS)

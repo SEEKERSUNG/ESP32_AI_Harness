@@ -50,7 +50,7 @@ AP 是 WPA2。首次设置只接受来自 AP 网段的客户端（可用 `web_se
 ## 网页能力
 
 - 视觉：响应式布局，跟随系统浅色/深色主题；使用本地 CSS 变量、无外部字体/CDN/图片，符合严格 CSP；输入框 16px、触控目标不小于 44px。
-- 对话：流式显示正文；`show_thinking=true` 时 reasoning 可折叠显示，reasoning 和正文都不设显示长度上限，思考框在用户接近底部时自动跟随滚动，摘要显示已接收字数；显示模型耗时、内置工具调用和结构化错误。代码/Skill fenced 块、待执行代码、执行输出、内置工具调用详情和历史本地记录都使用默认关闭的折叠区块，点击摘要查看全文；流式更新会保留已展开区块的状态。运行、丢弃和保存按钮保持在折叠区外，可直接操作。
+- 对话：同一用户请求的 thinking、工具调用/结果、执行结果和最终正文都放在一个 turn 卡片内，按发生顺序排列；`show_thinking=true` 时每个模型请求的 reasoning 是卡片内的可折叠步骤，最后才是正文。reasoning 随 assistant 消息持久化（每条最多 4096 字符），刷新页面后仍显示；实时流式和刷新后的历史使用同一套 turn 结构。工具/执行记录默认折叠，运行、丢弃和保存按钮保持在折叠区外；流式更新会保留已展开区块的状态。
 - 停止：流式期间显示“停止”按钮。点击后浏览器停止接收响应，设备端在下一批事件发送失败时中止当前模型请求；页面保持等待并轮询真实 busy 状态，回合结束后才恢复输入。**已经开始执行的生成代码不会被停止按钮中断**；普通代码会在 `code_timeout_s`/模型声明的 `timeout=` 截止时间停止并返回 `status=timeout`，不经过协作钩子的代码仍可能继续产生副作用，直到执行结束或看门狗复位。`timeout=` 应写在开围栏同一行；闭合围栏后的独立 `timeout=` 行和代码块首个未再使用的独立 `timeout=N` 行也会被兼容识别，其他说明文字不会改变超时。部分未提交的模型回答不会写入历史。
 - 模型提问：模型调用 `__ask` 时显示问题卡（标题、问题、最多 8 个选项按钮和自定义输入）。点击选项或直接输入文本会作为下一条消息发送；问题事件不阻塞设备线程，刷新后可从 `/api/status` 的 `question` 字段恢复。系统提示词会区分 `auto_run` 模式，避免模型在自动执行时向用户索要执行输出。
 - 对话框控件：Thinking 下拉框只有关闭/Low/High/Max 四档（默认 High），选择后立即写入 `config.json`，重启/复位后保持；AUTO 控制 `auto_run`，开启需要确认，关闭不需要。请求期间控件禁用，保存失败恢复设备实际状态。
@@ -199,7 +199,7 @@ question, response, code, background, execution, skill, feedback, done, error
 | `web_history_limit` | `200` | `/api/history` 最大消息数 |
 | `web_history_chars` | `131072` | 历史响应总字符预算 |
 
-网页对话视图加载的是 `/api/history` 的**有界最近窗口**：最多 `web_history_limit` 条、`web_history_chars` 字符，单条消息最多 8192 字符，工具/执行记录会折叠；连续的 observation 记录会合并成一个“本地执行/工具记录（N 条）”折叠块，避免 AUTO 连续反馈或停止后台任务后出现一长串结果框。串口 `/history` 打印当前 RAM 中的完整 `agent.history`，因此条数可能明显多于网页；网页在有截断时会显示 `最近 X/Y 条` 的提示。两者都来自同一份 `agent.history`，不是两份独立上下文；差异只来自网页响应预算。需要查看更多时可通过 `POST /api/config` 提高 `web_history_limit`（1–200）或 `web_history_chars`（1024–262144），或在串口使用 `/history`、`/context`。自动压缩或 `_trim_history` 之后，网页需要刷新历史才能看到压缩后的结果。
+网页对话视图加载的是 `/api/history` 的**有界最近窗口**：最多 `web_history_limit` 条、`web_history_chars` 字符，单条正文最多 8192 字符、单条 reasoning 最多 4096 字符。observation 记录会按“工具结果/执行结果/Harness 记录”逐条渲染为可折叠步骤，并与同一用户请求的 assistant reasoning、Native tool call 一起按发生顺序重建到同一个 turn 卡片中。串口 `/history` 打印当前 RAM 中的完整 `agent.history`，因此条数可能明显多于网页；网页在有截断时会显示 `最近 X/Y 条` 的提示。两者都来自同一份 `agent.history`，不是两份独立上下文；差异只来自网页响应预算。需要查看更多时可通过 `POST /api/config` 提高 `web_history_limit`（1–200）或 `web_history_chars`（1024–262144），或在串口使用 `/history`、`/context`。自动压缩或 `_trim_history` 之后，网页需要刷新历史才能看到压缩后的结果。
 
 | `ap_ssid_prefix` | `ESP32-Harness` | AP SSID 前缀 |
 | `ap_channel` | `6` | AP 信道 |

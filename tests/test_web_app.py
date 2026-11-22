@@ -892,7 +892,8 @@ class WebAppTests(unittest.TestCase):
         token = self.token()
         self.app.agent.history = [
             {"role": "user", "content": "one", "kind": "user"},
-            {"role": "assistant", "content": "two", "kind": "assistant"},
+            {"role": "assistant", "content": "two", "kind": "assistant",
+             "reasoning": "thinking about two"},
             {"role": "user", "content": "Local tool result for x",
              "kind": "observation"},
         ]
@@ -902,6 +903,8 @@ class WebAppTests(unittest.TestCase):
                          [item["index"] for item in history.json["messages"]])
         self.assertEqual(["user", "assistant", "observation"],
                          [item["kind"] for item in history.json["messages"]])
+        self.assertEqual("thinking about two",
+                         history.json["messages"][1]["reasoning"])
 
     def test_rewind_endpoint_by_count_and_index(self):
         token = self.token()
@@ -909,7 +912,8 @@ class WebAppTests(unittest.TestCase):
             {"role": "user", "content": "first", "kind": "user"},
             {"role": "assistant", "content": "one", "kind": "assistant"},
             {"role": "user", "content": "second", "kind": "user"},
-            {"role": "assistant", "content": "two", "kind": "assistant"},
+            {"role": "assistant", "content": "two", "kind": "assistant",
+             "reasoning": "thinking about two"},
         ]
         writer = self.call(request("POST", "/api/rewind",
                                    {"count": 1}, token=token))

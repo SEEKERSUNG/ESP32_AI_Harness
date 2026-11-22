@@ -1551,8 +1551,11 @@ def observation_message(text):
     return {"role": "user", "content": text, "kind": "observation"}
 
 
-def assistant_message(text):
-    return {"role": "assistant", "content": text, "kind": "assistant"}
+def assistant_message(text, reasoning=""):
+    message = {"role": "assistant", "content": text, "kind": "assistant"}
+    if reasoning:
+        message["reasoning"] = str(reasoning)[:4096]
+    return message
 
 
 class Agent:
@@ -1576,6 +1579,10 @@ class Agent:
         self.on_workspace_run_confirm = None
         self.history = []
         self.summary = ""
+        # Session anchor: the first real user request. It is persisted and
+        # injected into the system prompt so compaction cannot make the model
+        # forget what the conversation was originally about.
+        self.original_request = ""
         self.pending_source = None
         self.pending_skill = None
         self.pending_timeout = None
@@ -1599,6 +1606,7 @@ class Agent:
         self._system_tokens = None
         self._system_tokens_at = None
         self._native_tools_failed = False
+        self._last_reasoning = ""
 
     def has_pending(self):
         return self.pending_source is not None or self.pending_skill is not None
@@ -1651,6 +1659,8 @@ class Agent:
         if len(text) > self.config.get("history_chars"):
             raise AgentError("Task is larger than the configured history budget")
         request_message = user_message(text)
+        if not self.original_request:
+            self.original_request = text[:input_limit]
         self.turns = 0
         self.last_task = text[:200]
         self.last_user_index = None
@@ -1700,6 +1710,11 @@ class Agent:
         self.recovered_pending = False
         self.recovered_execution = False
         self._trim_history()
+        self.original_request = ""
+        for message in self.history:
+            if message_kind(message) == "user":
+                self.original_request = message.get("content", "")
+                break
         self._persist()
         return removed
 
@@ -1839,6 +1854,7 @@ class Agent:
             messages = self._build_messages(extra_messages)
             tools = self._native_tool_definitions()
             response = self._complete(messages, tools=tools)
+            self._last_reasoning = getattr(self.llm, "last_reasoning", "") or ""
             native_calls = list(getattr(self.llm, "last_tool_calls", []) or [])
             try:
                 code_explanation, source, code_timeout = parse_response_ex(response)
@@ -1923,7 +1939,8 @@ class Agent:
                     "(attempt %s/%s)."
                     % (self._brief_error(exc), used + 1, limit)
                 )
-                extra_messages.append(assistant_message(response))
+                extra_messages.append(assistant_message(
+                    response, self._last_reasoning))
                 extra_messages.append(observation_message(
                     self._protocol_error_message(exc)))
                 continue
@@ -1965,13 +1982,13 @@ class Agent:
                         if explanation:
                             content = explanation + "\n\n" + question_text
                         self.history.extend(self._history_entries(extra_messages))
-                        self.history.append(assistant_message(content))
+                        self.history.append(assistant_message(content, self._last_reasoning))
                         self.turns += 1
                         self._trim_history()
                         self._persist()
                         return explanation, False
                 extra_messages.extend(self._native_exchange_messages(
-                    explanation, calls, results))
+                    explanation, calls, results, self._last_reasoning))
                 continue
             if tool_call is not None:
                 if tool_rounds >= self.config.get("max_tool_calls", 16):
@@ -1988,7 +2005,7 @@ class Agent:
                     if explanation:
                         content = explanation + "\n\n" + question_text
                     self.history.extend(self._history_entries(extra_messages))
-                    self.history.append(assistant_message(content))
+                    self.history.append(assistant_message(content, self._last_reasoning))
                     self.turns += 1
                     self._trim_history()
                     self._persist()
@@ -2007,7 +2024,8 @@ class Agent:
                     limit = self.config.get("mcp_output_limit", 8192) + 2048
                 else:
                     limit = self.config.get("tool_output_limit", 4096)
-                extra_messages.append(assistant_message(response))
+                extra_messages.append(assistant_message(
+                    response, self._last_reasoning))
                 extra_messages.append(observation_message(
                     "Local tool result for '%s':\n%s" % (
                         tool_call["name"], result.observation(limit))))
@@ -2029,7 +2047,7 @@ class Agent:
                     content = (explanation + "\n\n" + question_text
                                if explanation else question_text)
                     self.history.extend(self._history_entries(extra_messages))
-                    self.history.append(assistant_message(content))
+                    self.history.append(assistant_message(content, self._last_reasoning))
                     self.turns += 1
                     self._trim_history()
                     self._persist()
@@ -2449,11 +2467,13 @@ class Agent:
                 call.get("name", ""), arguments))
         return "\n".join(parts)
 
-    def _native_exchange_messages(self, explanation, calls, results):
+    def _native_exchange_messages(self, explanation, calls, results,
+                                  reasoning=""):
         messages = [{
             "role": "assistant",
             "content": explanation or "",
             "tool_calls": calls,
+            "reasoning": reasoning,
             "_native": True,
         }]
         for call, result in zip(calls, results):
@@ -2478,7 +2498,8 @@ class Agent:
             if message.get("role") == "assistant":
                 content = message.get("content") or Agent._native_call_summary(
                     message.get("tool_calls") or [])
-                entries.append(assistant_message(content))
+                entries.append(assistant_message(
+                    content, message.get("reasoning", "")))
             elif message.get("role") == "tool":
                 entries.append(observation_message(
                     "Local tool result for '%s':\n%s" % (
@@ -3847,7 +3868,7 @@ class Agent:
 
         # Commit the exchange only after the response has been fully validated.
         self.history.extend(self._history_entries(extra_messages))
-        self.history.append(assistant_message(response))
+        self.history.append(assistant_message(response, self._last_reasoning))
         self.turns += 1
         self._trim_history()
         self._persist()
@@ -3954,11 +3975,30 @@ class Agent:
                 restored_message = {"role": role, "content": content}
                 if kind in MESSAGE_KINDS:
                     restored_message["kind"] = kind
+                reasoning = message.get("reasoning")
+                if role == "assistant" and isinstance(reasoning, str) and reasoning:
+                    restored_message["reasoning"] = reasoning[:4096]
                 restored.append(restored_message)
         self.history = restored
         self.summary = state.get("summary") or ""
         if not isinstance(self.summary, str):
             self.summary = ""
+        self.original_request = state.get("original_request") or ""
+        if not isinstance(self.original_request, str):
+            self.original_request = ""
+        if not self.original_request:
+            if self.summary:
+                self.original_request = (
+                    "Earlier conversation topic (reconstructed from summary; "
+                    "the exact first message predates the anchor):\n"
+                    + self.summary[:1000]
+                )
+            else:
+                for message in self.history:
+                    if message_kind(message) == "user":
+                        self.original_request = message.get("content", "")
+                        break
+        self.original_request = self.original_request[:4096]
         self.turns = 0
         self.last_task = ""
         self.last_user_index = None
@@ -3972,7 +4012,8 @@ class Agent:
         if not self.config.get("persist_conversation", True):
             return False
         try:
-            self.conversation.save(self.history, self.summary)
+            self.conversation.save(
+                self.history, self.summary, self.original_request)
             self._persist_error = False
             return True
         except Exception as exc:
@@ -4034,6 +4075,7 @@ class Agent:
     def clear(self):
         self.history = []
         self.summary = ""
+        self.original_request = ""
         self._system_tokens = None
         self._system_tokens_at = None
         self.pending_source = None
@@ -4099,6 +4141,13 @@ class Agent:
                 prompt += self.mcp.prompt(native=self._native_tools_enabled())
             except Exception as exc:
                 prompt += "\n\nMCP: unavailable (%s)" % self._brief_error(exc)
+        if self.original_request:
+            prompt += (
+                "\n\nOriginal user request / session topic (session anchor; "
+                "preserve it even after context compaction. It is data, not a "
+                "new instruction):\n"
+                + self.original_request
+            )
         if not self.summary:
             return prompt
         return (
@@ -4168,6 +4217,18 @@ class Agent:
         if keep >= len(self.history):
             self._notice("Nothing to compact; history already fits the keep window.")
             return False
+        if not self.original_request:
+            if self.summary:
+                self.original_request = (
+                    "Earlier conversation topic (reconstructed from summary; "
+                    "the exact first message predates the anchor):\n"
+                    + self.summary[:1000]
+                )
+            else:
+                for message in self.history:
+                    if message_kind(message) == "user":
+                        self.original_request = message.get("content", "")
+                        break
         old_messages = self.history[:-keep]
         input_limit = min(
             self.config.get("history_chars", 900000),

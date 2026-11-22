@@ -43,7 +43,7 @@ A local MicroPython agent harness that runs entirely on an **ESP32-S3 N16R8 (16 
 - **Two consoles** — the serial `esp32>` prompt handles natural-language tasks and `/` commands. The built-in web console supports login, streaming chat, stop, `/` commands from the command page, history, Wi-Fi/model/API key/CA/admin-password changes and factory reset.
 - **AP provisioning** — on first use or Wi-Fi failure the board starts a WPA2 AP (`ESP32-Harness-XXXX` / `esp32setup`). Connect a phone or laptop to configure Wi-Fi, the model and the admin password.
 - **Streaming responses** — SSE streaming by default with live reasoning and content. Thinking levels are off/Low/High/Max; High is the default and is persisted. `show_thinking` is on by default and can be hidden with `/thinking show off`.
-- **Persistent context and rewind** — committed messages and compaction summaries are written atomically to `/state/conversation.json` and restored after reboot. `/undo [N]` (alias `/rewind`) and the web rewind buttons remove conversation context only; they do not undo device side effects.
+- **Persistent context and rewind** — committed messages, compaction summaries and the first user request anchor are written atomically to `/state/conversation.json` and restored after reboot. Compaction does not make the model forget the original task goal; `/clear` resets the anchor. `/undo [N]` (alias `/rewind`) and the web rewind buttons remove conversation context only; they do not undo device side effects.
 
 **Models and tools**
 

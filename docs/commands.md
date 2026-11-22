@@ -61,11 +61,11 @@ URL:  http://192.168.4.1/
 | `/undo [N]` / `/rewind [N]` | 删除第 N 条最近用户消息及其后的全部回复（默认 N=1） |
 | `/clear` | 清除历史、摘要、待执行代码、最近执行状态和持久化文件 |
 
-默认 `persist_conversation=true`，已提交的历史和摘要会原子写入 `/state/conversation.json`，设备复位/重启后自动恢复；`/clear` 删除该文件，恢复出厂设置也会删除。网页“行为”设置可关闭持久化。对话可能包含用户粘贴的敏感文本，文件位于设备明文文件系统。上下文预算按近似 token 计算：ASCII 约 4 字符/token，非 ASCII 约 1 字符/token；默认 `context_tokens=200000`。达到消息数、字符数或 token 限制时，最旧消息会先被移除，但当前任务、源码和执行观察会被保留。单次任务超过 `input_limit`（默认 2000 字符）会被拒绝。
+默认 `persist_conversation=true`，已提交的历史、摘要和首个用户请求锚点会原子写入 `/state/conversation.json`，设备复位/重启后自动恢复；`/clear` 删除该文件，恢复出厂设置也会删除。网页“行为”设置可关闭持久化。对话可能包含用户粘贴的敏感文本，文件位于设备明文文件系统。上下文预算按近似 token 计算：ASCII 约 4 字符/token，非 ASCII 约 1 字符/token；默认 `context_tokens=200000`。达到消息数、字符数或 token 限制时，最旧消息会先被移除，但当前任务、源码和执行观察会被保留。单次任务超过 `input_limit`（默认 2000 字符）会被拒绝。
 
 `/undo` 只回退对话上下文，不恢复工作区文件、Skill、Memory 或执行造成的设备状态；它会同时清除待执行代码、Skill 提案、待回答问题和最近执行结果。网页顶栏“回退”等价于 `/undo`；实时发送的用户消息在回合结束时直接显示“回退到这里”，刷新历史后每条真实用户消息旁同样显示。压缩摘要不会被重建；历史索引以当前 `agent.history` 为准。
 
-自动压缩默认开启：估算上下文达到 `auto_compact_tokens`（默认 150000）时，Harness 用流式请求摘要较早消息，保留最近 `compact_keep_messages` 条，并把摘要放入系统提示词。摘要请求至少使用 `summary_timeout`（默认 300 秒），并复用 API 重试策略。`/compact` 可随时手动执行。
+自动压缩默认开启：估算上下文达到 `auto_compact_tokens`（默认 150000）时，Harness 用流式请求摘要较早消息，保留最近 `compact_keep_messages` 条，并把摘要放入系统提示词。首个用户请求会作为会话锚点单独保存并始终注入系统提示词，因此压缩后仍能回答“最初问的是什么”；`/clear` 才会重置锚点。摘要请求至少使用 `summary_timeout`（默认 300 秒），并复用 API 重试策略。`/compact` 可随时手动执行。
 
 ## MEMORY.md
 

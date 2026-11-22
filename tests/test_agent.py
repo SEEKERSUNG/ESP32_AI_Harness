@@ -78,6 +78,23 @@ class FakeLLM:
         return self.responses.pop(0)
 
 
+class ReasoningLLM(FakeLLM):
+    def __init__(self, *responses):
+        super().__init__(*responses)
+        self.last_reasoning = ""
+
+    def complete_stream(self, messages, on_reasoning=None, on_content=None,
+                        max_tokens=None, thinking_level=None,
+                        allow_truncated=False, timeout=None):
+        self.last_reasoning = "step-by-step check"
+        if on_reasoning is not None:
+            on_reasoning(self.last_reasoning)
+        return super().complete_stream(
+            messages, on_reasoning=on_reasoning, on_content=on_content,
+            max_tokens=max_tokens, thinking_level=thinking_level,
+            allow_truncated=allow_truncated, timeout=timeout)
+
+
 class RaisingLLM:
     def __init__(self, exception):
         self.exception = exception
@@ -280,8 +297,11 @@ class CompactionTests(unittest.TestCase):
             "The user asked for a sensor reading; it succeeded.", agent.summary
         )
         self.assertIn("first task", llm.calls[0][1]["content"])
+        self.assertEqual("first task", agent.original_request)
         self.assertIn("Summary of earlier conversation", agent._system_content())
         self.assertIn(agent.summary, agent._system_content())
+        self.assertIn("Original user request", agent._system_content())
+        self.assertIn("first task", agent._system_content())
 
     def test_compaction_uses_streaming_with_long_timeout(self):
         llm = FakeLLM("Streamed summary")
@@ -422,9 +442,11 @@ class CompactionTests(unittest.TestCase):
     def test_clear_resets_summary(self):
         agent = Agent(DummyConfig(), FakeLLM(), DummyBoard())
         agent.summary = "remember this"
+        agent.original_request = "first question"
         agent.history = [{"role": "user", "content": "hello"}]
         agent.clear()
         self.assertEqual("", agent.summary)
+        self.assertEqual("", agent.original_request)
         self.assertEqual([], agent.history)
 
     def test_clear_rotates_model_session(self):
@@ -756,6 +778,14 @@ class RecordingExecutor:
 
 
 class AgentTests(unittest.TestCase):
+    def test_assistant_turn_keeps_reasoning_for_history(self):
+        agent = Agent(DummyConfig(), ReasoningLLM("Done"), DummyBoard())
+        agent.ask("explain the plan")
+        self.assertEqual("assistant", agent.history[-1]["role"])
+        self.assertEqual("Done", agent.history[-1]["content"])
+        self.assertEqual("step-by-step check",
+                         agent.history[-1]["reasoning"])
+
     def test_rewind_removes_user_message_and_later_replies(self):
         agent = Agent(DummyConfig(), FakeLLM(), DummyBoard())
         agent.history = [

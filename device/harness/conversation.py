@@ -1,7 +1,8 @@
 """Bounded, atomic conversation persistence for reset/reboot survival.
 
-Only the committed chat history and the compaction summary are stored. Pending
-generated code is handled separately by recovery.py and is never auto-run.
+Only the committed chat history, the compaction summary and the first user
+request anchor are stored. Pending generated code is handled separately by
+recovery.py and is never auto-run.
 """
 
 import os
@@ -67,29 +68,40 @@ class ConversationStore:
             kind = item.get("kind")
             if kind in ("user", "assistant", "observation"):
                 message["kind"] = kind
+            reasoning = item.get("reasoning")
+            if role == "assistant" and isinstance(reasoning, str) and reasoning:
+                message["reasoning"] = reasoning[:4096]
             messages.append(message)
         summary = data.get("summary", "")
         if not isinstance(summary, str):
             summary = ""
+        original_request = data.get("original_request", "")
+        if not isinstance(original_request, str):
+            original_request = ""
+        original_request = original_request[:4096]
         messages = self._bounded(messages)
         self.last_messages = len(messages)
         self.last_chars = self._chars(messages)
         return {
             "messages": messages,
             "summary": summary,
+            "original_request": original_request,
             "saved_at": data.get("saved_at", 0),
         }
 
-    def save(self, messages, summary=""):
+    def save(self, messages, summary="", original_request=""):
         if not self.enabled:
             return False
         bounded = self._bounded(messages)
         if not isinstance(summary, str):
             summary = ""
+        if not isinstance(original_request, str):
+            original_request = ""
         payload = {
             "version": 1,
             "saved_at": self._now(),
             "summary": summary,
+            "original_request": original_request[:4096],
             "messages": bounded,
         }
         self._ensure_directory()
@@ -136,17 +148,25 @@ class ConversationStore:
                 continue
             if len(selected) >= self.max_messages:
                 break
-            if total + len(content) > self.max_chars:
+            reasoning = message.get("reasoning")
+            if role != "assistant" or not isinstance(reasoning, str):
+                reasoning = ""
+            reasoning = reasoning[:4096]
+            if total + len(content) + len(reasoning) > self.max_chars:
                 if selected:
                     break
-                # A single oversized message: keep its most recent tail.
+                # A single oversized message: keep its most recent content
+                # tail and drop the optional reasoning drawer.
                 content = content[-self.max_chars:]
+                reasoning = ""
             kind = message.get("kind")
             stored = {"role": role, "content": content}
             if kind in ("user", "assistant", "observation"):
                 stored["kind"] = kind
+            if reasoning:
+                stored["reasoning"] = reasoning
             selected.append(stored)
-            total += len(content)
+            total += len(content) + len(reasoning)
         selected.reverse()
         return selected
 
@@ -155,6 +175,7 @@ class ConversationStore:
         total = 0
         for message in messages:
             total += len(message.get("content", ""))
+            total += len(message.get("reasoning", ""))
         return total
 
     def _ensure_directory(self):

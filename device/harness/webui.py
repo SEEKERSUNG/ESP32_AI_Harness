@@ -405,6 +405,12 @@ label input,label textarea,label select{margin-top:6px;font-size:16px;color:var(
 .pane{padding:0 12px calc(var(--composer-h) + var(--tabs-h) + env(safe-area-inset-bottom) + 12px)}
 .chat-log{min-height:40vh;padding:16px 0 8px;display:flex;flex-direction:column;gap:12px}
 .chat-log:empty{min-height:0;padding:0}
+.turn{display:flex;flex-direction:column;gap:8px;width:100%}
+.turn-card{max-width:min(100%,760px);margin-right:auto;white-space:normal}
+.turn-steps{display:flex;flex-direction:column;gap:8px}
+.turn-answer{display:flex;flex-direction:column;gap:4px;white-space:pre-wrap;word-break:break-word}
+.turn-step{display:flex;flex-direction:column;gap:4px}
+.turn-step>.msg.system,.turn-steps>.msg.system{margin:0}
 .msg{margin:0;padding:12px 14px;border-radius:var(--radius);background:var(--bot-bubble);border:1px solid var(--line);white-space:pre-wrap;word-break:break-word;box-shadow:var(--shadow-sm);max-width:min(100%,760px);line-height:1.65}
 .msg.user{background:var(--user-bubble);border-color:var(--user-border);margin-left:auto;border-bottom-right-radius:4px}
 .msg.assistant{margin-right:auto;border-bottom-left-radius:4px}
@@ -491,7 +497,7 @@ details.reasoning pre,details.collapsible pre{max-height:240px;overflow:auto;whi
 """
 
 APP_JS = r"""'use strict';
-var state = {status:null, config:null, mcp:null, streaming:false, current:null, reasoning:null, reasoningChars:0, setup:false, setupInfo:null, authed:false, pendingKey:null, pendingEl:null, lastWifiError:'', activeStream:null, behaviorSaving:false, historyLoaded:false, backgroundKey:null, backgroundEl:null, backgroundPhase:null, backgroundTimer:null, backgroundResuming:false, autoContinueSeq:null, autoBusyNotice:false, liveUserEl:null, liveSeq:null, liveContent:'', liveReasoning:'', liveEventIndex:0, liveTimer:null, livePolling:false, liveGen:0};
+var state = {status:null, config:null, mcp:null, streaming:false, current:null, reasoning:null, reasoningChars:0, setup:false, setupInfo:null, authed:false, pendingKey:null, pendingEl:null, lastWifiError:'', activeStream:null, behaviorSaving:false, historyLoaded:false, backgroundKey:null, backgroundEl:null, backgroundPhase:null, backgroundTimer:null, backgroundResuming:false, autoContinueSeq:null, autoBusyNotice:false, liveUserEl:null, liveSeq:null, liveContent:'', liveReasoning:'', liveEventIndex:0, liveTimer:null, livePolling:false, liveGen:0, turnEl:null, turnCard:null, turnSteps:null};
 function $(id){return document.getElementById(id);}
 function setText(el,text){el.textContent = text == null ? '' : String(text);}
 function show(el, yes){el.hidden = !yes;}
@@ -540,11 +546,37 @@ function api(path, options){
   });
 }
 function post(path, value){return api(path,{method:'POST',body:JSON.stringify(value || {})});}
+function startTurn(){
+  var turn=document.createElement('div'); turn.className='turn';
+  $('chatLog').appendChild(turn);
+  state.turnEl=turn; state.turnCard=null; state.turnSteps=null;
+  state.current=null; state.reasoning=null; state.reasoningChars=0;
+  return turn;
+}
+function ensureTurn(){
+  if(!state.turnEl||!document.body.contains(state.turnEl)) startTurn();
+  return state.turnEl;
+}
+function ensureTurnCard(){
+  ensureTurn();
+  if(!state.turnCard){
+    var card=document.createElement('div'); card.className='msg assistant turn-card';
+    var steps=document.createElement('div'); steps.className='turn-steps';
+    card.appendChild(steps); state.turnEl.appendChild(card);
+    state.turnCard=card; state.turnSteps=steps;
+  }
+  return state.turnSteps;
+}
 function logMessage(role, text, cls){
   var stick=pageNearBottom();
-  var log=$('chatLog'); var el=document.createElement('div');
+  var el=document.createElement('div');
   el.className='msg ' + (cls || role); el.textContent=text || '';
-  log.appendChild(el); updateEmptyState(); scrollIfStick(stick); return el;
+  if((cls||role)==='user'){
+    startTurn(); state.turnEl.appendChild(el);
+  } else {
+    ensureTurnCard().appendChild(el);
+  }
+  updateEmptyState(); scrollIfStick(stick); return el;
 }
 function commandLog(text){
   var el=document.createElement('div');el.className='msg system';el.textContent=text || '';
@@ -560,9 +592,9 @@ function collapsibleBlock(summaryText, text, open){
 }
 function collapsedMessage(summaryText, text){
   var stick=pageNearBottom();
-  var el=document.createElement('div'); el.className='msg system';
+  var el=document.createElement('div'); el.className='turn-step';
   el.appendChild(collapsibleBlock(summaryText,text,false));
-  $('chatLog').appendChild(el); updateEmptyState(); scrollIfStick(stick);
+  ensureTurnCard().appendChild(el); updateEmptyState(); scrollIfStick(stick);
   return el;
 }
 function renderAssistantBody(b){
@@ -626,10 +658,10 @@ function setAssistantText(text){
 }
 function assistantBubble(){
   var stick=pageNearBottom();
-  var el=document.createElement('div'); el.className='msg assistant';
+  var el=document.createElement('div'); el.className='turn-answer';
   var body=document.createElement('div'); el.appendChild(body);
   var meta=document.createElement('span'); meta.className='meta'; el.appendChild(meta);
-  $('chatLog').appendChild(el); updateEmptyState(); scrollIfStick(stick);
+  ensureTurnCard().appendChild(el); updateEmptyState(); scrollIfStick(stick);
   return {el:el, body:body, meta:meta, text:'', fenceCount:0};
 }
 function ensureAssistant(){if(!state.current){state.current=assistantBubble();}return state.current;}
@@ -1075,29 +1107,44 @@ function refreshHistory(){
   stopLivePoll(); state.liveSeq=null; state.liveContent=''; state.liveReasoning=''; state.liveEventIndex=0;
   return api('/api/history?limit=200').then(function(data){
     $('chatLog').innerHTML=''; state.current=null; state.reasoning=null; state.reasoningChars=0; state.pendingKey=null; state.pendingEl=null; state.liveUserEl=null;
+    state.turnEl=null; state.turnCard=null; state.turnSteps=null;
     state.backgroundEl=null; state.backgroundKey=null; state.backgroundPhase=null;
-    var observations=[];
-    function flushObservations(){
-      if(!observations.length) return;
-      var text=observations.join('\n\n---\n\n');
-      collapsedMessage('本地执行/工具记录（'+observations.length+' 条，'+text.length+' 字符）',text);
-      observations=[];
+    function renderObservation(content){
+      var label='本地记录';
+      if(content.indexOf("Local tool result for '")===0) label='工具结果';
+      else if(content.indexOf('Local ESP32')===0) label='执行结果';
+      else if(content.indexOf('Local harness event')===0) label='Harness 记录';
+      collapsedMessage(label,content);
     }
     (data.messages||[]).forEach(function(message){
       var role=message.role==='assistant'?'assistant':'user';
       if(message.role==='user' && message.kind==='observation'){
-        observations.push(message.content || '');
+        renderObservation(message.content || '');
         return;
       }
-      flushObservations();
       if(role==='assistant'){
-        var bubble=assistantBubble(); bubble.text=message.content || ''; renderAssistantBody(bubble);
+        var content=message.content || '';
+        var reasoning=message.reasoning || '';
+        var native=content.indexOf('Native tool call:')===0;
+        var bubble=null;
+        if(reasoning){
+          bubble=assistantBubble();
+          var box=collapsibleBlock('思考过程 ('+reasoning.length+' 字)',reasoning,false);
+          bubble.el.insertBefore(box,bubble.body);
+        }
+        if(native){
+          var firstLine=content.split('\n')[0];
+          var match=firstLine.match(/^Native tool call:\s*(\S+)/);
+          collapsedMessage('工具调用'+(match?': '+match[1]:''),content);
+        } else if(content){
+          if(!bubble) bubble=assistantBubble();
+          bubble.text=content; renderAssistantBody(bubble);
+        }
       } else {
         var el=logMessage(role, message.content, role);
         if(message.kind==='user') attachRewindButton(el, message.index);
       }
     });
-    flushObservations();
     updateEmptyState();
     if(data.truncated){
       var shown=data.shown_messages||(data.messages||[]).length;
@@ -1115,9 +1162,9 @@ function refreshHistory(){
 function handleEvent(ev){
   if(!ev || !ev.t) return;
   if(ev.t==='model_start'){
-    // Keep the turn's thinking drawer across retries/tool-call model requests;
-    // only the assistant content bubble starts fresh.
-    state.current=null;
+    // Start a new step inside the same outer turn card. Each model request
+    // gets its own thinking drawer, followed by any tool activity and text.
+    state.current=null; state.reasoning=null; state.reasoningChars=0;
     return;
   }
   if(ev.t==='reasoning'){
@@ -1144,7 +1191,14 @@ function handleEvent(ev){
   }
   if(ev.t==='notice'){ logMessage('system', ev.d||'', 'system'); return; }
   if(ev.t==='model'){
-    var meta=ensureAssistant().meta;
+    var b=state.current;
+    if(!b){
+      // A tool-only round has no answer text. Do not create an empty bubble
+      // that disappears after refresh; errors still need a visible step.
+      if(ev.ok && !ev.error) return;
+      b=ensureAssistant();
+    }
+    var meta=b.meta;
     var text='模型: ' + (ev.ok?'OK':'ERROR') + (ev.finish?' finish='+ev.finish:'') + (ev.elapsed_ms!=null?' '+ev.elapsed_ms+'ms':'');
     if(ev.first_token_ms) text += ' 首字='+ev.first_token_ms+'ms';
     if(ev.token_count) text += ' chunks='+ev.token_count;
@@ -1155,7 +1209,9 @@ function handleEvent(ev){
   }
   if(ev.t==='tool'){
     if(ev.phase==='start'){
-      collapsedMessage('工具调用: '+(ev.name||''),ev.args?JSON.stringify(ev.args):'{}');
+      var argsText='{}';
+      try{argsText=JSON.stringify(ev.args||{});}catch(e){}
+      collapsedMessage('工具调用: '+(ev.name||''),argsText);
     } else {
       collapsedMessage('工具结果: '+(ev.name||'')+' '+(ev.ok?'OK':'ERROR'),
         (ev.output||'')+(ev.error?'\n'+ev.error:'') || '<无输出>');
@@ -1163,7 +1219,11 @@ function handleEvent(ev){
     return;
   }
   if(ev.t==='response'){
-    var b=ensureAssistant();
+    var b=state.current;
+    if(!b){
+      if(!ev.text) return;
+      b=ensureAssistant();
+    }
     if(ev.text && !b.text) setAssistantText(ev.text);
     return;
   }
@@ -1188,7 +1248,7 @@ function card(title){
   var stick=pageNearBottom();
   var el=document.createElement('div'); el.className='card';
   var h=document.createElement('h4'); h.textContent=title; el.appendChild(h);
-  $('chatLog').appendChild(el); updateEmptyState(); scrollIfStick(stick); return el;
+  ensureTurnCard().appendChild(el); updateEmptyState(); scrollIfStick(stick); return el;
 }
 function renderCode(ev){
   var runnable=ev.runnable!==false;

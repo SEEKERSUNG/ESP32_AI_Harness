@@ -714,10 +714,22 @@ class WebApp:
                 content, cut = _truncate(content, total_limit)
                 if not content:
                     break
-            total += len(content)
+            role = message.get("role", "")
+            reasoning = ""
+            if role == "assistant":
+                raw_reasoning = message.get("reasoning", "")
+                if isinstance(raw_reasoning, str):
+                    reasoning = raw_reasoning[:4096]
+                    room = total_limit - total - len(content)
+                    if room <= 0:
+                        reasoning = ""
+                    elif len(reasoning) > room:
+                        reasoning = reasoning[:room]
+            total += len(content) + len(reasoning)
             truncated = truncated or cut
             newest_first.append({
-                "role": message.get("role", ""), "content": content,
+                "role": role, "content": content,
+                "reasoning": reasoning,
                 "truncated": cut,
                 "index": window_start + offset,
                 "kind": message_kind(message),

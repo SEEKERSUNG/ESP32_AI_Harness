@@ -54,10 +54,12 @@ class ConversationStoreTests(unittest.TestCase):
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": "world"},
         ]
-        self.assertTrue(store.save(messages, "summary text"))
+        self.assertTrue(store.save(
+            messages, "summary text", "the original question"))
         state = store.load()
         self.assertEqual(messages, state["messages"])
         self.assertEqual("summary text", state["summary"])
+        self.assertEqual("the original question", state["original_request"])
         self.assertTrue(store.exists())
         self.assertEqual(2, store.status()["messages"])
 
@@ -65,7 +67,8 @@ class ConversationStoreTests(unittest.TestCase):
         store = ConversationStore(self.directory.name, self.config())
         messages = [
             {"role": "user", "content": "hello", "kind": "user"},
-            {"role": "assistant", "content": "world", "kind": "assistant"},
+            {"role": "assistant", "content": "world", "kind": "assistant",
+             "reasoning": "thinking about world"},
             {"role": "user", "content": "Local tool result", "kind": "observation"},
         ]
         store.save(messages)
@@ -202,11 +205,12 @@ class ConversationStoreTests(unittest.TestCase):
         store.save([
             {"role": "user", "content": "old task"},
             {"role": "assistant", "content": "old answer"},
-        ], "old summary")
+        ], "old summary", "the first task")
         agent = Agent(config, FakeLLM(), DummyBoard(), conversation=store)
         restored = agent.restore_conversation(store.load())
         self.assertEqual(2, restored)
         self.assertEqual("old summary", agent.summary)
+        self.assertEqual("the first task", agent.original_request)
         self.assertEqual("old task", agent.history[0]["content"])
 
     def test_failed_turn_persists_user_message_and_error(self):
