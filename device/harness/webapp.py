@@ -64,9 +64,14 @@ class WebCommandInteractive(Exception):
     pass
 
 
+class WebCommandConfirm(Exception):
+    pass
+
+
 class CommandCaptureSink:
-    def __init__(self, limit=16384):
+    def __init__(self, limit=16384, confirmed=False):
         self.limit = limit
+        self.confirmed = confirmed
         self.parts = []
         self.size = 0
         self.closed = False
@@ -88,10 +93,15 @@ class CommandCaptureSink:
         self._append(str(text) + "\n")
 
     def readline(self, prompt="", secret=False):
-        raise WebCommandInteractive("This command requires the serial console")
+        raise WebCommandInteractive(
+            "This command needs interactive input; use the corresponding web "
+            "form or the serial console")
 
     def ask_yes_no(self, prompt, default=False):
-        raise WebCommandInteractive("This command requires serial confirmation")
+        if self.confirmed:
+            self._append("%s yes (confirmed)\n" % prompt)
+            return True
+        raise WebCommandConfirm(prompt)
 
     def model_start(self):
         self._append("--- model request ---\n")
@@ -663,7 +673,7 @@ class WebApp:
             "ap_active": bool(status.get("ap_active")),
             "history": {"messages": usage.get("messages", 0), "chars": usage.get("chars", 0)},
             "max_tokens": self.app.config.get("max_tokens", 32768),
-            "max_turns": self.app.config.get("max_turns", 8),
+            "max_turns": self.app.config.get("max_turns", 32),
             "input_limit": self.app.config.get("input_limit", 2000),
             "stream_header_timeout": self.app.config.get("stream_header_timeout", 300),
             "stream_idle_timeout": self.app.config.get("stream_idle_timeout", 300),
@@ -1285,55 +1295,116 @@ class WebApp:
         finally:
             self.app.end_operation()
 
+    def _command_rejection(self, line):
+        """Return a reason when a serial command has no safe one-shot web form.
+
+        All non-interactive commands are accepted here, including file writes,
+        search/HTTP calls and /run or /workspace run (confirmed by the command
+        sink and executed through the main-thread handoff). Commands that need
+        readline input or reboot the board must use their dedicated web action
+        (or the serial console), because a one-shot web request cannot supply
+        a second prompt or survive a reboot.
+        """
+        parts = line.split()
+        if not parts:
+            return "Command is empty"
+        command = parts[0].lower()
+        args = parts[1:]
+        known = (
+            "/help", "/status", "/history", "/context", "/summary", "/code",
+            "/discard", "/undo", "/rewind", "/skills", "/skill-show",
+            "/skill-delete", "/thinking", "/auto", "/native", "/search",
+            "/test", "/compact", "/clear", "/memory", "/workspace",
+            "/mcp", "/http", "/background", "/bg", "/web",
+            "/setup", "/wifi", "/model", "/ca", "/repl", "/factory-reset",
+            "/run", "/continue",
+        )
+        if command not in known:
+            return "Unknown command. Type /help for the command list."
+        if command in ("/setup", "/wifi", "/model", "/ca"):
+            return (
+                "Use the web settings form for %s; this command needs "
+                "interactive input" % command
+            )
+        if command == "/repl":
+            return (
+                "Use the serial console for /repl; it restarts the device into "
+                "maintenance mode"
+            )
+        if command == "/factory-reset":
+            return (
+                "Use the web factory-reset form; it requires the admin password"
+            )
+        if command == "/web" and args:
+            return "Use the web settings form to reset the admin password"
+        return ""
+
     def _command_allowed(self, line):
+        return not self._command_rejection(line)
+
+    @staticmethod
+    def _command_needs_confirmation(line):
         parts = line.split()
         if not parts:
             return False
         command = parts[0].lower()
-        args = parts[1:]
-        allowed = ("/help", "/status", "/history", "/context", "/summary", "/code",
-                   "/discard", "/undo", "/rewind", "/skills", "/skill-show",
-                   "/thinking", "/auto", "/search", "/compact", "/clear",
-                   "/memory", "/workspace", "/peripherals", "/background", "/bg")
-        if command not in allowed:
-            return False
-        if command in ("/background", "/bg"):
-            # Listing/status is read-only and useful while jobs run. Stop,
-            # note and discard require the serial console or the dedicated
-            # JSON endpoints so web commands cannot mutate tasks silently.
-            return not args or args[0].lower() in (
-                "list", "ls", "status", "show")
-        if command == "/auto" and args:
-            return False
-        if command == "/memory" and args:
-            return False
-        if command == "/workspace" and args and args[0].lower() not in (
-                "list", "read", "stat"):
-            return False
-        if command == "/peripherals" and args and args[0].lower() != "scan":
-            return False
-        return True
+        args = [part.lower() for part in parts[1:]]
+        if command == "/auto":
+            return (
+                (len(args) == 1 and args[0] == "on")
+                or (len(args) == 2 and args[0] == "run" and args[1] == "on")
+            )
+        if command == "/mcp" and len(args) >= 3:
+            return args[0] == "auto" and args[2] == "on"
+        return False
+
+    @staticmethod
+    def _command_operation_source(line):
+        parts = line.split()
+        command = parts[0].lower() if parts else ""
+        args = [part.lower() for part in parts[1:]]
+        if command == "/run":
+            return "web-run"
+        if command == "/continue":
+            return "web-continue"
+        if command == "/workspace" and args and args[0] == "run":
+            return "web-run"
+        return "web-command"
 
     def _command(self, req, writer):
         body = self._json(req)
         line = str(body.get("line", "")).strip()
+        confirm = _boolean(body, "confirm", False)
         if not line.startswith("/"):
             raise _error("Command must start with /", 400, "invalid")
         if len(line) > int(self.app.config.get("web_command_limit", 4096)):
             raise _error("Command is too long", 413, "invalid")
-        if not self._command_allowed(line):
-            raise _error("This command requires the serial console or a dedicated web action",
-                         400, "invalid")
-        sink = CommandCaptureSink(int(self.app.config.get("web_output_limit", 16384)))
+        rejection = self._command_rejection(line)
+        if rejection:
+            raise _error(rejection, 400, "invalid")
+        if self._command_needs_confirmation(line) and not confirm:
+            raise _error(
+                "This command changes a risky setting; confirm it in the web UI",
+                400, "confirm")
+        sink = CommandCaptureSink(
+            int(self.app.config.get("web_output_limit", 16384)),
+            confirmed=confirm,
+        )
         exclusive = self.app.is_exclusive_command(line)
         acquired = False
         if exclusive:
-            acquired = self.app.begin_operation("web-command")
+            acquired = self.app.begin_operation(
+                self._command_operation_source(line))
             if not acquired:
                 raise _error("Device is busy", 409, "busy")
         self.app.ui.bind(sink)
         try:
             self.app.command(line)
+        except WebCommandConfirm as exc:
+            writer.send_json(400, {"ok": False, "error": str(exc),
+                                   "code": "confirm",
+                                   "output": sink.getvalue()})
+            return
         except WebCommandInteractive as exc:
             writer.send_json(400, {"ok": False, "error": str(exc),
                                    "code": "interactive",

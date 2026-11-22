@@ -33,7 +33,7 @@ PC 负责部署、串口终端和浏览器访问网页。云端不执行工具�
 - 每次用户任务都把系统提示词和本地 `messages` 历史重新发送；
 - 单次请求结束后连接可以关闭，不依赖会话级长连接；
 - 服务端无状态；
-- OpenAI 兼容路径为每个客户端会话生成稳定的 `x-opencode-session: ses_...` 请求头，随模型请求、压缩请求和 `/test api` 发送；`/clear` 时轮换，便于 OpenCode Go 等网关做路由和提示缓存；Anthropic 路径不发送该头，使用 `x-api-key`；
+- OpenAI 兼容路径和 Anthropic 路径都为每个客户端会话生成稳定的 `x-opencode-session: ses_...` 请求头，随模型请求、压缩请求和 `/test api` 发送；`/clear` 时轮换，便于 OpenCode Go 等网关做路由和提示缓存；Anthropic 路径同时使用 `x-api-key`；
 - TCP/TLS 连接是否复用由 HTTP 客户端决定，只影响延迟，不影响正确性。
 
 ESP32-S3 的 PSRAM 使完整 Harness 环境下重新建立 TLS 连接不再受经典 ESP32 的内存碎片限制。
@@ -105,7 +105,7 @@ MCP 调用在模型回合线程执行（串口主线程或 Web 线程）；Web �
 
 ## 自动模式
 
-`auto_run` 默认关闭。开启后，模型返回的代码块会立即执行并进入自动反馈循环；Skill 保存仍需确认。自动反馈受 `max_turns` 限制（默认 8，可用 `/auto turns N` 或网页设置调整），明显无限循环的代码会被阻止自动执行。启动时恢复的待审代码不会自动执行。
+`auto_run` 默认关闭。开启后，模型返回的代码块会立即执行并进入自动反馈循环；Skill 保存仍需确认。自动反馈受 `max_turns` 限制（默认 32，可用 `/auto turns N` 或网页设置调整），明显无限循环的代码会被阻止自动执行。启动时恢复的待审代码不会自动执行。
 
 自动模式下，如果模型在解释文字中向用户提问，同时又返回 python 代码块，Harness 会把“提问 + 代码”当作协议错误回传模型，要求它改用 `__ask` 或只返回代码；该代码不会自动执行。系统提示词还要求示例、片段和伪代码使用 text 代码块而不是 python 代码块，因为所有 python fence 都会被视为可执行代码。这些规则是保守启发式，不能替代用户审查。
 
@@ -122,9 +122,9 @@ MCP 调用在模型回合线程执行（串口主线程或 Web 线程）；Web �
 
 ## 硬件外设
 
-GPIO、I2C、SPI、UART、NeoPixel、ADC、PWM、电容触摸和 RTC 写入默认关闭，通过 `/peripherals` 显式配置。执行器向生成代码、工作区脚本和后台任务注入受控的全局 `api` 对象（`HardwareAPI`）：`api.status()`/`api.available()`、`api.gpio`、`api.spi`、`api.i2c`、`api.uart`、`api.neopixel`、`api.adc`、`api.pwm`、`api.touch`、`api.rtc`、`api.pulse`，以及只读的 `api.system`。所有调用仍经过 `HardwareManager` 的启用开关、保留引脚、`allowed_gpio_pins`、已配置总线和 `peripheral_max_transfer` 检查；生成代码不得 `import machine`。`import api` 为兼容旧代码返回同一对象。`/peripherals scan` 保留用于接线检查。Flash/PSRAM、USB、启动 strapping 和控制台 UART 引脚默认保留。
+执行器不再注入 `api` 对象，也不维护外设 allowlist；生成代码、工作区脚本和后台任务直接 `import machine`，使用 `machine.Pin`/`SPI`/`I2C`/`UART`/`PWM`/`ADC`/`TouchPad`/`RTC`/`time_pulse_us` 以及 `neopixel`、`framebuf` 等 MicroPython 原生模块。`/peripherals` 命令和对应配置字段已移除，旧配置在加载时丢弃。
 
-I2C 使用 `machine.SoftI2C`；SPI 默认使用硬件 `machine.SPI`（`mode=sw` 时回退到 `SoftSPI`，写入型设备可省略 MISO）；UART 使用 `machine.UART`，NeoPixel 使用 `neopixel.NeoPixel`，ADC 使用 `machine.ADC`；PWM 使用 `machine.PWM`（占空比缓存），触摸使用 `machine.TouchPad`，RTC 使用 `machine.RTC`，脉冲测量使用 `machine.time_pulse_us`，内部温度使用 `esp32.mcu_temperature`；读写大小受 `peripheral_max_transfer` 限制。GPIO 每次使用都会重新检查允许列表；总线和灯带缓存同时记录配置签名，配置被撤销或修改后，旧对象不会继续按旧权限使用，而会拒绝访问或按新配置重建。真实执行前应确认目标板接线、电平、供电和设备地址。
+引脚号由用户接线决定。GPIO26–37 用于 Flash/Octal PSRAM，43/44 用于控制台 UART，19/20 为原生 USB，0/3/45/46 为启动 strapping；这些引脚应避开，除非明确知道风险。真实执行前应确认目标板接线、电平、供电和设备地址。多任务同时访问同一条 SPI/I2C 总线可能交错，应避免并发驱动同一设备。
 
 ## Workspace
 
@@ -193,12 +193,10 @@ thinking 级别只有四档：`disabled`（关闭）、`low`、`high`、`max`；
 | `skills.py` | `/skills/<name>/SKILL.md` 存储、frontmatter、读取和删除 |
 | `memory.py` | `/MEMORY.md` 创建、读取、追加、删除、替换、清空和长度限制 |
 | `workspace.py` | `/workspace` 路径约束、读写、tmp 清理和大小限制 |
-| `hardware.py` | GPIO/I2C/SPI/UART 配置检查、保留引脚和真实机器接口 |
 | `executor.py` | 本地编译执行、源码插桩、线程级执行运行时、协作式超时/停止、隔离输出和异常捕获、结果对象 |
 | `migration.py` | 旧 `.py` 记录迁移为 Markdown Skill |
 | `recovery.py` | 看门狗封装、执行前源码保存、复位后恢复 |
-| `device.py` | 板级信息、Wi-Fi/NTP；生成代码的硬件能力说明 |
-| `hardware.py` | 外设配置校验、`HardwareManager` 和生成代码使用的 `HardwareAPI`（`api` 全局对象） |
+| `device.py` | 板级信息、Wi-Fi/NTP；生成代码的原生 MicroPython 硬件说明 |
 | `config.py` | 普通配置与秘密配置分离、原子替换、字段校验 |
 
 ## 资源策略
@@ -215,14 +213,13 @@ ESP32-S3 N16R8 约有 8.3 MB GC 空闲堆和 14 MB 文件系统。代码仍保�
 - MCP 受 `mcp_max_servers`、`mcp_tool_limit`、`mcp_prompt_chars`、`mcp_args_limit`、`mcp_output_limit`、`mcp_response_limit`、每服务器 `max_tools` 和 `mcp_refresh_budget_s` 限制；
 - 持久对话受 `conversation_max_chars` 和 `conversation_max_messages` 限制；
 - 后台任务受 `background_max_jobs`（默认 4，最多 4 个 worker）、`background_thread_stack_kb`（默认 32）和 `background_max_records`（默认 8 条，每条输出 4096 字符）限制；
-- `peripheral_max_transfer` 限制 GPIO 以外的总线单次读写大小；
 - 内置工具最多 `max_tool_calls`（默认 16）次连续调用；
 - `input_limit` 拒绝过大的单次任务；
 - 当前反馈轮至少保留任务、源码和观察结果；
 - `response_limit` 限制非流式网络正文，`stream_response_limit` 限制 SSE 总字节；
 - `code_limit` 限制生成代码；
 - `output_limit` 限制执行输出；
-- `max_turns` 限制连续云端反馈（默认 8，可用 `/auto turns N` 调整）；
+- `max_turns` 限制连续云端反馈（默认 32，可用 `/auto turns N` 调整）；
 - 请求前后主动 GC；
 - HTTP 拒绝压缩正文。
 

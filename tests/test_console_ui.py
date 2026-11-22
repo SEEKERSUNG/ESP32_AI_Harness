@@ -426,7 +426,7 @@ class ApplicationConstructionTests(unittest.TestCase):
             self.assertTrue(any(
                 "console-big-ok" in str(call) for call in app._serial_ui.calls))
 
-    def test_peripheral_commands_accept_write_only_hardware_spi(self):
+    def test_peripherals_command_is_removed(self):
         with tempfile.TemporaryDirectory() as root:
             with mock.patch("harness.console.SerialUI",
                             lambda _feed: FakeSerial()):
@@ -435,22 +435,23 @@ class ApplicationConstructionTests(unittest.TestCase):
                     config=MutableConfig(web_enabled=False),
                     supervisor=QuietSupervisor(),
                 )
-            app.command("/peripherals spi 1 12 11 - 20000000 hw")
-            bus = app.config.get("spi_buses")[0]
-            self.assertEqual("hw", bus["mode"])
-            self.assertEqual(20000000, bus["freq"])
-            self.assertNotIn("miso", bus)
-            app.command("/peripherals transfer 4096")
-            self.assertEqual(4096, app.config.get("peripheral_max_transfer"))
-            app.command("/peripherals pwm 4")
-            self.assertEqual([4], app.config.get("pwm_pins"))
-            app.command("/peripherals touch 5")
-            self.assertEqual([5], app.config.get("touch_pins"))
-            app.command("/peripherals rtc write on")
-            self.assertTrue(app.config.get("rtc_write"))
-            device_import = app.executor.execute(
-                "import device\nprint(device.info()['platform'])")
-            self.assertTrue(device_import.ok, device_import.observation())
+            app.command("/peripherals")
+            self.assertTrue(any(
+                "Unknown command" in str(call) for call in app._serial_ui.calls))
+            self.assertIsNone(app.config.get("spi_buses"))
+
+    def test_memory_replace_accepts_inline_replacement(self):
+        with tempfile.TemporaryDirectory() as root:
+            with mock.patch("harness.console.SerialUI",
+                            lambda _feed: FakeSerial()):
+                app = Application(
+                    root=root,
+                    config=MutableConfig(web_enabled=False),
+                    supervisor=QuietSupervisor(),
+                )
+            app.memory.append("Board uses 115200 baud.")
+            app.command("/memory replace 115200 => 921600")
+            self.assertIn("921600", app.memory.bundle()["content"])
 
     def test_search_provider_command_only_accepts_auto_or_bing(self):
         with tempfile.TemporaryDirectory() as root:

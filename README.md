@@ -9,7 +9,7 @@
 
 在 **ESP32-S3 N16R8（16 MB Flash + 8 MB Octal PSRAM）** 上运行的本地 MicroPython Agent Harness。串口和网页控制台、对话历史、API 请求、代码确认、本地执行、技能、记忆和 MCP 远程工具全部在开发板上完成；云端 OpenAI 兼容 API 或 Anthropic Messages API 只负责模型推理。
 
-> **安全提示**：生成代码拥有完整 MicroPython 进程权限，不是沙箱。Web 控制台是**纯 HTTP**，只适用于可信局域网。外设和自动执行默认关闭。公开部署前请阅读 [安全、恢复与限制](docs/safety.md) 和 [Web 控制台](docs/web.md)。
+> **安全提示**：生成代码拥有完整 MicroPython 进程权限，不是沙箱，并可直接使用 `machine`/`neopixel` 操作硬件。Web 控制台是**纯 HTTP**，只适用于可信局域网。自动执行默认关闭。公开部署前请阅读 [安全、恢复与限制](docs/safety.md) 和 [Web 控制台](docs/web.md)。
 
 ## 目录
 
@@ -33,14 +33,14 @@
 - **整机运行，不依赖 PC 守护进程**：部署完成后，拔掉电脑也能在局域网内通过浏览器或串口使用。
 - **可审查执行**：模型生成的 Python 默认先展示、再确认、后执行；自动执行是显式 opt-in。
 - **协议跟随模型**：OpenAI 兼容与 Anthropic Messages 双协议；AUTO 搜索自动跟随当前模型 API 选择原生搜索，不支持服务端搜索的端点使用免 Key 的 Bing。
-- **硬件受控暴露**：生成代码只能通过全局 `api` 对象访问已配置的外设，不能直接 `import machine` 或操作裸引脚。
+- **原生 MicroPython 硬件**：生成代码直接 `import machine`、`neopixel`、`framebuf` 等模块，使用标准 MicroPython 外设库；没有全局 `api` 对象、外设 allowlist 或 `/peripherals` 前置配置。
 - **完整控制面**：串口保留全部能力；网页提供日常对话、配置、历史和后台任务管理。
 
 ## 特性
 
 **交互与控制**
 
-- **双控制台**：串口 `esp32>` 自然语言任务和 `/` 命令；设备内置 Web 控制台，可登录对话、停止流式回答、执行白名单命令、查看历史、修改 Wi-Fi/模型/API Key/CA/管理密码和恢复出厂设置。
+- **双控制台**：串口 `esp32>` 自然语言任务和 `/` 命令；设备内置 Web 控制台，可登录对话、停止流式回答、执行命令页 `/` 命令、查看历史、修改 Wi-Fi/模型/API Key/CA/管理密码和恢复出厂设置。
 - **AP 配网**：首次使用或 Wi-Fi 连接失败时自动开启 WPA2 AP（`ESP32-Harness-XXXX` / `esp32setup`），手机或电脑连接后即可设置 Wi-Fi、模型和管理密码。
 - **流式响应**：默认 SSE 流式，reasoning 和正文实时输出；思考级别为关闭/Low/High/Max，默认 High 并持久化。`show_thinking` 默认开启，可用 `/thinking show off` 隐藏。
 - **上下文持久化与回退**：已提交对话和压缩摘要原子写入 `/state/conversation.json`，复位后自动恢复；`/undo [N]`（别名 `/rewind`）和网页回退只删除对话上下文，不回滚设备副作用。
@@ -56,10 +56,10 @@
 
 **执行与硬件**
 
-- **确认后执行**：模型生成的 Python 默认经确认后在设备上 `compile()` / `exec()`；可选自动执行和自动反馈，受 `max_turns` 限制（默认 8）。
+- **确认后执行**：模型生成的 Python 默认经确认后在设备上 `compile()` / `exec()`；可选自动执行和自动反馈，受 `max_turns` 限制（默认 32）。
 - **协作式超时**：默认 20 秒执行超时，`range()`、`time.sleep()`、`while True` 和显式 `__harness_check()` 会在截止时间或停止请求处停止并返回 `status=timeout`/`cancelled`，不会因普通超时重启设备。
 - **多后台任务**：短程序优先前台执行；长时间任务可在独立 worker 线程运行（默认最多 4 个），串口主线程仍可继续对话或处理网页请求。停止是协作式的，阻塞 C/SPI 调用仍只能等看门狗。
-- **外设 API**：GPIO、I2C、SPI、UART、NeoPixel、ADC、PWM、电容触摸和 RTC 写入默认关闭，必须通过 `/peripherals` 显式配置。生成代码获得受控的全局 `api` 对象：`api.gpio/spi/i2c/uart/neopixel/adc/pwm/touch/rtc/pulse/system`。
+- **原生硬件访问**：生成代码直接使用 MicroPython 的 `machine`（`Pin`、`SPI`、`I2C`、`UART`、`PWM`、`ADC`、`TouchPad`、`RTC`、`time_pulse_us`）、`neopixel`、`framebuf`、`esp` 和 `esp32`；没有 `api` 对象、引脚 allowlist 或 `/peripherals` 命令。保留引脚（Flash/PSRAM、USB、控制台 UART、strapping）仍需按接线说明避开。
 
 **可靠性**
 
@@ -143,7 +143,7 @@ python tools/deploy.py --port COMx
 python tools/deploy.py --port COMx --clean
 ```
 
-部署器只操作 MicroPython VFS，不擦除 Flash、不修改固件或分区。默认构建并复制 `.mpy`；也可以使用 `--source` 部署源码。`--clean` 会删除设备配置、CA 和技能，只应在明确允许时使用。
+部署器只操作 MicroPython VFS，不擦除 Flash、不修改固件或分区。默认构建并复制 `.mpy`，同时把 `certs/ca-bundle.pem` 复制为 `/ca.pem`；也可以使用 `--source` 部署源码。`--clean` 会删除设备配置和技能（公共 CA 随后重新复制），只应在明确允许时使用。
 
 如果设备已经运行 `esp32>` 控制台，先执行 `/repl` 并确认，部署器会自动清除维护标志并复位。
 
@@ -159,15 +159,7 @@ mpremote connect COMx repl
 python tools/serial_console.py --port COMx
 ```
 
-首次使用且设备上还没有 `/ca.pem` 时，建议先安装 Mozilla 公共 CA bundle（全量 bundle 超过串口粘贴上限，必须用文件复制）：
-
-```powershell
-python tools/force_raw.py --port COMx
-mpremote connect COMx fs cp certs/ca-bundle.pem :ca.pem
-mpremote connect COMx reset
-```
-
-然后重新连接并执行：
+部署器会自动把 `certs/ca-bundle.pem` 复制为设备 `/ca.pem`（完整部署、`--clean` 和首次增量部署；`--changed` 在 bundle 内容变化时更新），通常不需要手动安装 CA。然后执行：
 
 ```text
 /setup
@@ -201,14 +193,7 @@ CA:         /ca.pem
 
 OpenAI 兼容路径和 Anthropic 路径都会发送稳定的 `x-opencode-session: ses_...` 会话头（兼容 OpenCode Go 等网关），并发送 `esp32-harness/0.4` User-Agent；`/clear` 时轮换会话 ID。
 
-项目包含公开根证书：
-
-```text
-certs/ca-bundle.pem                 # Mozilla 全量 bundle，推荐
-certs/digicert-global-root-g2.pem   # 最小 DigiCert 根证书
-```
-
-全量 bundle 适合更换 API 地址或访问多个公共 HTTPS 服务；固定 DeepSeek 时可使用最小根证书。安装和切换见 [CA 证书说明](certs/README.md)。**不想自定义 CA 时保持原样即可**：全量 bundle 已部署到 `/ca.pem` 时，无需在 Web 或串口重复上传；保持当前路径和 TLS 验证开启。Web 将自定义 CA 放在默认收起的“高级”区域，检测不到 CA 文件时才自动展开提醒。
+部署器会自动安装 `certs/ca-bundle.pem`（Mozilla 全量公共根证书）到 `/ca.pem`，因此更换 API 地址或访问多个公共 HTTPS 服务时通常无需重新配置。**不想自定义 CA 时保持原样即可**：无需在 Web 或串口重复上传；保持当前路径和 TLS 验证开启。Web 将自定义 CA 放在默认收起的“高级”区域，检测不到 CA 文件时才自动展开提醒。私有 CA、企业内网或自建 API 仍需按 [CA 证书说明](certs/README.md) 替换；完整部署会用公共 bundle 覆盖 `/ca.pem`，私有 CA 请在部署后重新安装。
 
 ## Web 控制台
 
@@ -227,7 +212,7 @@ SSID: ESP32-Harness-XXXX
 URL:  http://192.168.4.1/
 ```
 
-首次打开会要求设置管理密码，可选填写 Wi-Fi 和模型。之后登录即可对话、执行白名单 `/` 命令和修改配置。页面跟随系统浅色/深色主题，适配手机和桌面；对话/命令导航栏固定在页面底部；Thinking 下拉框和 AUTO 开关位于对话框旁。模型调用 `__ask` 时会显示问题卡，可点选项或直接输入自定义回答。代码、执行输出和历史本地记录默认折叠；流式回答默认每 32 字符刷新一次。
+首次打开会要求设置管理密码，可选填写 Wi-Fi 和模型。之后登录即可对话、执行网页命令页的 `/` 命令和修改配置。页面跟随系统浅色/深色主题，适配手机和桌面；对话/命令导航栏固定在页面底部；Thinking 下拉框和 AUTO 开关位于对话框旁。模型调用 `__ask` 时会显示问题卡，可点选项或直接输入自定义回答。代码、执行输出和历史本地记录默认折叠；流式回答默认每 32 字符刷新一次。
 
 网页与串口共享历史；同一时间只允许一个模型回合。修改 Wi-Fi 时设备会先开 AP，首次保存后约 2–5 秒完成扫描/关联；页面短暂断线或短暂显示旧错误都不等于失败，以 `/status` 的 `Wi-Fi:` 行为准。忘记管理密码时，在串口执行：
 
@@ -257,7 +242,7 @@ URL:  http://192.168.4.1/
 /continue 1 # 提交 1 号任务结果并继续对话
 ```
 
-执行结果按配置自动反馈给模型；后续修复代码仍需 `/run` 确认，自动反馈轮数由 `max_turns` 限制（默认 8，可用 `/auto turns N` 或网页设置调整）。执行超时默认 20 秒，模型可以在代码块开围栏同一行写 `timeout=45` 选择更长的截止时间（上限 `code_timeout_max_s=300`）。超时后 Harness 返回 `status=timeout` 并让模型继续，不会因为普通超时重启设备；长循环应调用 `__harness_check()`，`range()`、`time.sleep()` 和 `while True` 已自动插桩。
+执行结果按配置自动反馈给模型；后续修复代码仍需 `/run` 确认，自动反馈轮数由 `max_turns` 限制（默认 32，可用 `/auto turns N` 或网页设置调整）。执行超时默认 20 秒，模型可以在代码块开围栏同一行写 `timeout=45` 选择更长的截止时间（上限 `code_timeout_max_s=300`）。超时后 Harness 返回 `status=timeout` 并让模型继续，不会因为普通超时重启设备；长循环应调用 `__harness_check()`，`range()`、`time.sleep()` 和 `while True` 已自动插桩。
 
 后台任务在自己的 worker 线程运行，适合长时间采集或需要与用户继续交互的场景；短程序优先使用前台。停止是协作式的：只设置取消标志，在检查点抛出 `ExecutionCancelled`，阻塞在 C/SPI 调用中的任务可能只能重启设备。`timeout=0`/`infinite` 允许后台无截止时间运行，但不暂停 30 秒看门狗。
 
@@ -284,7 +269,7 @@ URL:  http://192.168.4.1/
 | `/thinking [level]` | 查看或设置 thinking：disable/low/high/max（默认 high） |
 | `/thinking show on\|off` | 显示或隐藏 reasoning 文本 |
 | `/auto [on\|off]` | 自动运行生成代码并自动反馈 |
-| `/auto turns N` | 设置自动反馈最大轮数（默认 8，范围 1–50） |
+| `/auto turns N` | 设置自动反馈最大轮数（默认 32，范围 1–50） |
 | `/run` / `/run bg [note]` / `/continue [id]` | 前台执行、创建后台任务，或继续某个后台结果 |
 | `/background [list\|status ID\|stop [ID]\|note ID TEXT\|discard ID]` | 查看和管理多个后台任务 |
 | `/undo [N]` / `/rewind [N]` | 回退第 N 条最近用户消息及其后的全部上下文 |
@@ -293,7 +278,6 @@ URL:  http://192.168.4.1/
 | `/memory` | 查看始终加载的 `/MEMORY.md` |
 | `/skills` / `/skill-show` / `/skill-delete` | 管理 Skill |
 | `/workspace` | 查看和管理共享工作区 |
-| `/peripherals` | 配置 GPIO/I2C/SPI/UART/NeoPixel/ADC/PWM/触摸/RTC |
 | `/search <query>` | 手动调用 Web 搜索 |
 | `/search provider auto\|bing` | 选择搜索提供方 |
 | `/search on\|off` | 启用/禁用 Web 搜索 |
@@ -304,7 +288,7 @@ URL:  http://192.168.4.1/
 | `/web` / `/web reset-password` | 查看 Web 状态 / 重置管理密码 |
 | `/factory-reset` | 删除用户数据并重启（需输入 `RESET`） |
 
-完整命令、白名单和交互规则见 [命令手册](docs/commands.md)。
+完整命令、网页命令限制和交互规则见 [命令手册](docs/commands.md)。
 
 ### MCP 示例
 
@@ -328,7 +312,7 @@ device/       部署到设备 VFS 的 MicroPython 代码
 tests/        CPython 单元测试（Fake 设备/云端服务）
 tools/        部署、串口终端、烟雾测试和维护工具
 docs/         架构、使用、扩展和安全文档
-certs/        公开根证书和 Mozilla CA bundle
+certs/        Mozilla 全量 CA bundle（部署时自动安装）
 ```
 
 ## 文档
@@ -338,14 +322,14 @@ certs/        公开根证书和 Mozilla CA bundle
 | [文档索引](docs/README.md) | 按使用、实现、扩展和安全分类的阅读顺序 |
 | [架构与执行时序](docs/architecture.md) | 线程模型、会话、上下文预算、执行流程 |
 | [部署和初始化](docs/setup.md) | 固件、部署、串口、Wi-Fi/模型/CA 配置 |
-| [命令手册](docs/commands.md) | 串口和网页命令、白名单、典型流程 |
+| [命令手册](docs/commands.md) | 串口和网页命令、确认规则、典型流程 |
 | [Web 控制台与 AP 配网](docs/web.md) | HTTP API、NDJSON、AP 状态机、安全边界 |
 | [Skills](docs/skills.md) | Markdown 指令包、渐进式加载 |
 | [MEMORY.md](docs/memory.md) | 始终加载的项目上下文 |
 | [Anthropic Messages API](docs/anthropic.md) | 协议映射、thinking、Header 和限制 |
 | [MCP 远程工具](docs/mcp.md) | Streamable HTTP、配置、确认和限制 |
 | [Workspace 工作区](docs/workspace.md) | 持久资料和临时文件 |
-| [生成代码的硬件 API](docs/hardware.md) | `api.gpio/spi/i2c/uart/neopixel/adc/pwm/touch/rtc/pulse/system`、配置和 ST7735 骨架 |
+| [生成代码的硬件访问](docs/hardware.md) | `machine`/`neopixel`/`framebuf`、GPIO/SPI/I2C/UART/PWM/ADC/触摸/RTC 和 ST7735 示例 |
 | [开发、测试和调试](docs/development.md) | 测试矩阵、设备约定、API 调试 |
 | [增加外设或模型供应商](docs/extending.md) | 扩展点 |
 | [安全、恢复与限制](docs/safety.md) | 威胁模型、看门狗、秘密和设备边界 |
@@ -382,7 +366,7 @@ python tools/console_smoke.py --port COMx
 - **Web 控制台是纯 HTTP**：只用于可信局域网，绝不端口映射到公网。管理密码、Cookie、对话和配置在局域网内可被嗅探。
 - **秘密保存在设备上**：`/secrets.json` 和 `/mcp.json` 是明文文件（MCP 的 Header 可能含 Token），串口或物理访问可读取；`/status`、`/api/status`、`/api/config` 和 `/api/mcp` 只返回 `_set` 布尔或 Header 名称。
 - **对话会落盘**：`/state/conversation.json` 保存已提交的对话和摘要，可能包含用户粘贴的敏感文本；`/state/background.json` 会保存最多 `background_max_records`（默认 8）条有界后台记录和输出，直到继续/丢弃。可用网页设置关闭持久化，`/clear` 和恢复出厂设置会删除。
-- **外设默认关闭**：只有显式配置的 GPIO/I2C/SPI/UART/NeoPixel/ADC/PWM/触摸才可用，保留引脚受保护。
+- **原生硬件直接可访问**：生成代码可以使用 `machine`/`neopixel` 操作真实引脚，错误接线、错误电压或误用 Flash/PSRAM、USB、控制台 UART、strapping 引脚可能损坏外设或导致设备无法正常启动；确认执行前请核对接线。
 - **自动模式默认关闭**：`auto_run` 需要显式开启和二次确认，会产生多次计费请求；MCP 的 `auto` 同样需要确认。
 - **超时不是硬沙箱**：`range()`、`time.sleep()`、`while True` 和 `__harness_check()` 可协作停止；不调用任何钩子的 C 级阻塞或复杂 `while` 条件仍可能由 30 秒看门狗复位。停止按钮只停止接收和后续回合，不能强制终止已经开始的 Python 执行。
 

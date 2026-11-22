@@ -11,7 +11,12 @@ from harness.console import LiveTurn, UIRouter, command_is_exclusive
 from harness.llm import LLMStreamCancelled
 from harness.mcp import MCPManager, MCPStore
 from harness.web import WebError, WebRequest
-from harness.webapp import WebApp, WebTurnSink
+from harness.webapp import (
+    CommandCaptureSink,
+    WebApp,
+    WebCommandConfirm,
+    WebTurnSink,
+)
 from harness.webauth import WebAuth, parse_cookie
 
 
@@ -1589,15 +1594,30 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(200, writer.status)
         self.assertIn("web-command", self.app.operations)
 
-        for line in ("/wifi", "/workspace run tmp/a.py", "/memory delete x",
-                     "/peripherals enable", "/skill-delete demo",
-                     "/auto on", "/run", "/background stop",
-                     "/background note 2 dashboard",
-                     "/background discard 2"):
+        for line in (
+                "/memory append note",
+                "/http get https://example.com",
+                "/native on", "/test", "/mcp",
+                "/background stop", "/background note 2 dashboard",
+                "/background discard 2", "/run", "/run bg note",
+                "/workspace run tmp/a.py", "/continue",
+                "/memory replace old => new"):
+            writer = self.call(request("POST", "/api/command",
+                                       {"line": line}, token=token))
+            self.assertEqual(200, writer.status)
+            self.assertIn("output for " + line, writer.json["output"])
+
+        for line in ("/auto on", "/auto run on", "/mcp auto github on"):
             with self.assertRaises(WebError) as raised:
                 self.call(request("POST", "/api/command",
                                   {"line": line}, token=token))
             self.assertEqual(400, raised.exception.status)
+            self.assertEqual("confirm", raised.exception.code)
+            writer = self.call(request("POST", "/api/command",
+                                       {"line": line, "confirm": True},
+                                       token=token))
+            self.assertEqual(200, writer.status)
+            self.assertTrue(writer.json["ok"])
 
         writer = self.call(request("POST", "/api/command",
                                    {"line": "/skills"}, token=token))
@@ -1606,10 +1626,13 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("output for /skills", writer.json["output"])
         self.assertIn("web-command", self.app.operations)
 
-        with self.assertRaises(WebError) as raised:
-            self.call(request("POST", "/api/command",
-                              {"line": "/bad"}, token=token))
-        self.assertEqual(400, raised.exception.status)
+        for line in ("/wifi", "/setup", "/model", "/ca", "/repl",
+                     "/factory-reset", "/web reset-password",
+                     "/peripherals", "/bad"):
+            with self.assertRaises(WebError) as raised:
+                self.call(request("POST", "/api/command",
+                                  {"line": line}, token=token))
+            self.assertEqual(400, raised.exception.status)
         with self.assertRaises(WebError) as raised:
             self.call(request("POST", "/api/command",
                               {"line": "/" + "x" * 5000}, token=token))
@@ -2005,6 +2028,14 @@ class WebTurnSinkTests(unittest.TestCase):
 
 
 class CommandTests(unittest.TestCase):
+    def test_command_sink_confirmation(self):
+        sink = CommandCaptureSink(128)
+        with self.assertRaises(WebCommandConfirm):
+            sink.ask_yes_no("Proceed?")
+        confirmed = CommandCaptureSink(128, confirmed=True)
+        self.assertTrue(confirmed.ask_yes_no("Proceed?"))
+        self.assertIn("yes (confirmed)", confirmed.getvalue())
+
     def test_command_is_exclusive(self):
         self.assertFalse(command_is_exclusive("/status"))
         self.assertFalse(command_is_exclusive("/history"))
@@ -2014,7 +2045,6 @@ class CommandTests(unittest.TestCase):
         self.assertFalse(command_is_exclusive("/workspace list"))
         self.assertFalse(command_is_exclusive("/workspace read notes.txt"))
         self.assertTrue(command_is_exclusive("/code"))
-        self.assertTrue(command_is_exclusive("/peripherals scan 0"))
         self.assertFalse(command_is_exclusive("/web"))
         self.assertFalse(command_is_exclusive("/background"))
         self.assertFalse(command_is_exclusive("/background list"))
@@ -2027,7 +2057,6 @@ class CommandTests(unittest.TestCase):
         self.assertTrue(command_is_exclusive("/auto on"))
         self.assertTrue(command_is_exclusive("/thinking show on"))
         self.assertTrue(command_is_exclusive("/workspace run x.py"))
-        self.assertTrue(command_is_exclusive("/peripherals enable"))
         self.assertTrue(command_is_exclusive("/web reset-password"))
         self.assertTrue(command_is_exclusive("/unknown"))
 

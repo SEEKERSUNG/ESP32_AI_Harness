@@ -5,7 +5,7 @@
 ## 初次使用
 
 1. [部署和初始化](setup.md)：固件、依赖、部署、串口、Wi-Fi/模型/CA。
-2. [命令手册](commands.md)：串口和网页命令、白名单、典型流程。
+2. [命令手册](commands.md)：串口和网页命令、确认规则、典型流程。
 3. [Web 控制台与 AP 配网](web.md)：登录、AP 配网、HTTP API、NDJSON 事件。
 
 ## 理解实现
@@ -21,11 +21,11 @@
 - [Anthropic Messages API](anthropic.md)：协议映射、thinking/effort、Header 和限制。
 - [MCP 远程工具](mcp.md)：Streamable HTTP、服务器配置、确认和限制。
 - [Workspace 工作区](workspace.md)：持久资料和临时文件。
-- [生成代码的硬件 API](hardware.md)：`api.gpio/spi/i2c/uart/neopixel/adc/pwm/touch/rtc/pulse/system`、配置和 ST7735 骨架。
+- [生成代码的硬件访问](hardware.md)：`machine`/`neopixel`/`framebuf`、GPIO/SPI/I2C/UART/PWM/ADC/触摸/RTC 和 ST7735 示例。
 - [增加外设或模型供应商](extending.md)：GPIO/I2C/SPI/UART/NeoPixel/ADC 和模型端点。
 
 ## 其他
 
-- [CA 证书说明](../certs/README.md)：公共根证书和 Mozilla bundle。
+- [CA 证书说明](../certs/README.md)：Mozilla 全量 CA bundle、自动安装和自定义 CA。
 - [安全策略](../SECURITY.md)：漏洞报告和部署安全要求。
 - [变更记录](../CHANGELOG.md)：版本历史。

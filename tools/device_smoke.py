@@ -20,7 +20,6 @@ from harness.device import Board
 from harness.executor import Executor, execution_runtime
 from harness.http_client import decode_chunked, split_url
 from harness.http_tool import HttpToolError, is_public_ipv4, validate_url
-from harness.hardware import HardwareManager, PeripheralError
 from harness.llm import OpenAIClient, _network_retryable, llm_error, normalize_thinking_level
 from harness.llm_anthropic import AnthropicClient
 from harness.mcp import MCPStore
@@ -151,49 +150,6 @@ class AuthConfig:
         pass
 
 
-class SmokePin:
-    IN = 0
-    OUT = 1
-    PULL_UP = 2
-    PULL_DOWN = 3
-
-    def __init__(self, pin, mode=0, pull=None):
-        self.pin = pin
-        self.current = 0
-
-    def value(self, value=None):
-        if value is not None:
-            self.current = value
-        return self.current
-
-
-class SmokeI2C:
-    def __init__(self, scl=None, sda=None, freq=400000):
-        self.scl = scl
-        self.sda = sda
-        self.freq = freq
-
-    def scan(self):
-        return []
-
-
-class SmokeMachine:
-    Pin = SmokePin
-    SoftI2C = SmokeI2C
-
-
-class SmokePeripheralConfig:
-    def __init__(self):
-        self.values = {
-            "peripherals_enabled": True,
-            "allowed_gpio_pins": [4],
-            "i2c_buses": [{"id": 0, "sda": 5, "scl": 6, "freq": 400000}],
-        }
-
-    def get(self, name, default=None):
-        return self.values.get(name, default)
-
-
 def _exists(path):
     try:
         os.stat(path)
@@ -298,32 +254,13 @@ def smoke_mcp_store():
     os.remove(store.path)
 
 
-def smoke_hardware_cache():
-    config = SmokePeripheralConfig()
-    hardware = HardwareManager(config, machine_module=SmokeMachine)
-    hardware.gpio_setup(4, "out")
-    config.values["allowed_gpio_pins"] = []
-    try:
-        hardware.gpio_write(4, 1)
-    except PeripheralError:
-        pass
-    else:
-        raise AssertionError("revoked GPIO remained writable")
-
-    first = hardware.i2c_bus(0)
-    config.values["i2c_buses"] = [
-        {"id": 0, "sda": 16, "scl": 15, "freq": 100000}
-    ]
-    second = hardware.i2c_bus(0)
-    assert first is not second
-    assert second.freq == 100000
-    config.values["i2c_buses"] = []
-    try:
-        hardware.i2c_scan(0)
-    except PeripheralError:
-        pass
-    else:
-        raise AssertionError("removed I2C bus remained usable")
+def smoke_native_hardware(board):
+    result = Executor(board).execute(
+        "import machine\n"
+        "print(machine.freq() > 0)\n"
+        "print(len(machine.unique_id()) > 0)")
+    assert result.ok, result.output
+    assert result.output.count("True") >= 2, result.output
 
 
 class TimeoutConn:
@@ -559,7 +496,7 @@ def run():
     assert "smoke-ok" in result.output
     assert "micropython" in result.output
     assert recovery.consume() is None
-    smoke_hardware_cache()
+    smoke_native_hardware(board)
     smoke_web()
     smoke_handoff(board)
     smoke_background_threads(board)

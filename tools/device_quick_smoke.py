@@ -108,9 +108,9 @@ def run():
     assert "cpu_freq" in board_info and "unique_id" in board_info, board_info
     prompt = system_prompt(config, Board(), workspace=True)
     assert "listdir/open/stat" in prompt
-    assert "global 'api' object" in prompt
-    assert "api.gpio" in prompt
-    assert "api.spi.write(bus, data)" in prompt
+    assert "no api object" in prompt
+    assert "import machine" in prompt
+    assert "machine.SPI" in prompt
     assert "CS/DC/RST/BL" in prompt
     assert "api.workspace" not in prompt
     assert "listdir/open/stat" in builtin_tool_prompt(
@@ -260,20 +260,10 @@ def run():
     shell = None
     try:
         shell = Application(root="/smoke", supervisor=NoWatchdog())
-        assert shell.hardware_api.status()["enabled"] is False
-        for name in ("pwm", "touch", "rtc", "system", "pulse"):
-            assert hasattr(shell.hardware_api, name), name
-        assert shell.hardware_api.system.freq() > 0
-        assert len(shell.hardware_api.rtc.datetime()) == 8
-        assert shell.hardware_api.system.temperature() > -100
-        assert len(shell.hardware_api.system.unique_id()) >= 8
-        api_result = shell.executor.execute(
-            "print(api.status()['enabled'])")
-        assert api_result.ok and "False" in api_result.output, api_result.output
-        import_result = shell.executor.execute(
-            "import api\nprint(api.status()['enabled'])")
-        assert import_result.ok and "False" in import_result.output, (
-            import_result.observation())
+        machine_result = shell.executor.execute(
+            "import machine\nprint(machine.freq() > 0)")
+        assert machine_result.ok and "True" in machine_result.output, (
+            machine_result.observation())
         device_global = shell.executor.execute(
             "print(device.info()['platform'])")
         assert device_global.ok and "esp32" in device_global.output, (

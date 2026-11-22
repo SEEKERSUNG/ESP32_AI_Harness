@@ -4,8 +4,8 @@
 
 - `device/`：部署到 MicroPython 根目录的代码（`llm.py`/`llm_anthropic.py`、`mcp.py`、`conversation.py`、`background.py`、`executor.py` 等）；
 - `tests/`：CPython 单元测试，设备服务使用 Fake/Mock；
-- `tools/deploy.py`：构建 `.mpy` 并操作 VFS 的部署工具；
-- `tools/device_smoke.py`：真实 MicroPython 模块、Web 线程、HTTP、handoff 与 Agent 闭环测试；还包括 Fake machine 外设缓存重建、HTTP 请求总超时、执行超时、持久对话和 MCP 存储；
+- `tools/deploy.py`：构建 `.mpy`、复制公共 CA 并操作 VFS 的部署工具；
+- `tools/device_smoke.py`：真实 MicroPython 模块、Web 线程、HTTP、handoff 与 Agent 闭环测试；还包括原生 `machine` 导入、HTTP 请求总超时、执行超时、持久对话和 MCP 存储；
 - `tools/serial_console.py`：简单交互式 UTF-8 串口终端，按字符边界限速发送，适合长中文输入和通用串口调试；
 - `tools/console_smoke.py`、`input_smoke.py`：串口控制台和 UTF-8 输入测试；
 - `tools/diagnose_deepseek.py`：维护模式下分阶段诊断 Wi-Fi/DNS/TCP/TLS/HTTP；
@@ -19,11 +19,10 @@
 - `tool` 调用循环、内置工具结果回到模型、`max_tool_calls`（默认 16）上限；
 - 原生 function calling：OpenAI `tools` 定义与 `tool_calls` 累积、Anthropic `input_schema` 与 `tool_use`/`input_json_delta`、assistant/tool 消息转换、空正文但有效工具调用、端点拒绝原生工具后的文本回退、`/native off`；
 - 内置工具协议容错：`tool_call`/`arguments` 别名、字符串 `args`、未知工具提示、动作与代码块混用/空代码块/超长代码的 `max_format_retries` 修复循环；Skill 头或描述校验错误带针对性提示，并至少重试 2 次；
-- 硬件 API：`HardwareAPI` 的 `api.gpio/spi/i2c/uart/neopixel/adc`、禁用时拒绝、允许引脚和总线校验、`Executor` 注入与缺失时不暴露 `api`；
+- 原生硬件：生成代码可直接 `import machine`，使用 `Pin`/`SPI`/`I2C`/`UART`/`PWM`/`ADC`/`TouchPad`/`RTC`/`time_pulse_us` 和 `neopixel`；执行器不再注入 `api`；
 - `skill` 提案解析、保存确认和本地事件；
 - `MEMORY.md` 创建、追加、删除、替换、清空和始终加载；
-- 外设配置只接受合法 GPIO/I2C/SPI/UART/NeoPixel/ADC 参数，保留引脚和重复引脚被拒绝；
-- 自动模式：`auto_run` 只执行新生成代码，自动反馈循环受 `max_turns` 限制（默认 8）；`/auto turns N` 和网页设置可调整；
+- 自动模式：`auto_run` 只执行新生成代码，自动反馈循环受 `max_turns` 限制（默认 32）；`/auto turns N` 和网页设置可调整；
 - `__skill` 内置工具：`list`/`read` 按需读取 Skill 目录和正文，`delete` 在用户明确要求时删除 Skill 目录；
 - `__workspace` 内置工具：路径穿越、容量/数量限制、tmp 启动清理；
 - `__search`：只有 `auto` / `bing` 两种设置；`auto` 跟随模型 API 选择 Anthropic `web_search`、OpenAI Responses `web_search`、DeepSeek `deepseek_web_search`（Messages/Chat Completions 两种协议，关闭 thinking）或 Bing；count 上限、结果格式、输出/答案截断和 HTTP 错误；原生搜索失败回退 Bing；Bing RSS 解析、HTML 解析、实体解码、转义标签与 `<` 比较的区分；
@@ -43,7 +42,7 @@
 - 执行超时：`range`/`while True`/`time.sleep` 插桩、`__harness_check()`、`ExecutionTimeout` 不被 `except Exception` 吞掉、超时观察回传、`timeout=` 开围栏解析/空格与标点兼容/闭合围栏后独立行兼容/首个源码行兼容/说明文字不误读、正整数上限、正小数向上取整而非变成无限；
 - MCP：initialize/session、JSON/SSE、tools/list 分页、tools/call、2026-07-28 `_meta`/Header、404 重初始化、Header 脱敏、只读工具免确认和 auto 确认。
 
-真实硬件测试前先 `/peripherals` 检查配置，再用 `/peripherals scan` 验证 I2C 地址；不要只依据主机 Fake 结果判断真实引脚。
+真实硬件测试前核对实际接线、电平和供电；I2C 地址可用 `I2C.scan()` 验证。不要只依据主机 Fake 结果判断真实引脚。
 
 ## Web 控制台测试
 
@@ -52,16 +51,16 @@
 - `webauth`：加盐 SHA-256、密码长度、错误密码限速/指数锁定、`Retry-After`、会话 TTL/上限/登出/改密清除、Cookie 解析；
 - HTTP：请求行/头/正文上限、Content-Length、拒绝 Transfer-Encoding 和重复长度、100-continue、安全头、JSON/NDJSON framing、Host/Origin/X-Harness 校验；请求头与正文共享总 deadline，socket 超时不能无限续期；WebServer 停止未完成时不得假成功重启；
 - 配置：秘密字段永不返回、`_set` 布尔、keep/clear 语义、校验失败回滚、CA 路径和 PEM 校验、单次保存；JSON 布尔类型严格校验；`save_all()` 第二次写盘失败时两个文件都恢复；保存成功后的响应发送失败不再回滚 RAM；setup 失败可重试且密码会话不提前轮换；
-- 命令：白名单、交互命令拒绝、输出截断、变更命令持锁、只读命令不持锁；`/code` 和 `/peripherals scan` 必须持锁，HTTP 200 中的 `ok:false` 必须在网页显示错误；
+- 命令：非交互命令可用、确认命令返回 `confirm` 并可带 `confirm:true` 重试、交互/代码执行/重启命令拒绝、输出截断、变更命令持锁、只读命令不持锁；`/code` 必须持锁，HTTP 200 中的 `ok:false` 必须在网页显示错误；
 - 状态与历史：pending 清理竞态不返回 500，历史字符预算优先保留最新消息，历史条目返回绝对 `index`/`kind`，`backgrounds` 列表和单任务结果字段有界；
 - 串口：CRLF/LFCR 配对只吞一次，LF-only 和 CR-only 的连续空行必须保留；
 - Web UI：聊天区 Thinking/AUTO 控件不在设置页重复出现，AUTO 开启确认和反馈保持；代码、执行输出和本地记录默认折叠，流式更新保留展开状态，窄屏控件可换行；CA 已安装时高级自定义默认收起，缺失时自动展开且不改变 TLS 验证默认值；实时用户消息通过 `done.user_index` 添加回退按钮，刷新历史后同样显示；
-- 聊天与执行：auto off 代码卡、auto on 安全代码执行/反馈、无限循环阻止、Skill 永不自动保存、`max_turns`（默认 8）和 `/auto turns` 边界、手动 Run 只反馈一次、客户端断开在步骤间停止；前台/后台 `mode` 分离、多个后台任务并发与排队、`/api/continue {"id"}` 只提交一次、自动继续卡片和回退按钮存在；
+- 聊天与执行：auto off 代码卡、auto on 安全代码执行/反馈、无限循环阻止、Skill 永不自动保存、`max_turns`（默认 32）和 `/auto turns` 边界、手动 Run 只反馈一次、客户端断开在步骤间停止；前台/后台 `mode` 分离、多个后台任务并发与排队、`/api/continue {"id"}` 只提交一次、自动继续卡片和回退按钮存在；
 - 线程：`UIRouter` 线程隔离、`Executor.main_runner` 回主线程、worker executor 不回主线程、`Application.run_on_main/pump_main_request`、后台期间允许对话/前台执行但拒绝维护操作、停止单任务/全部任务、共享运行时的全局钩子恢复、协作钩子喂狗与非协作前台代码停止喂狗；
 - 网络：AP 启动/停止、AP 宽限、无管理密码不关 AP、断线开 AP、STA 重试、状态缓存；
 - 目标文件：`tests/test_background.py`、`test_console_ui.py`、`test_executor.py`、`test_web_auth.py`、`test_web_http.py`、`test_web_app.py`、`test_web_ui.py`、`test_network_ap.py`。
 
-真实设备测试建议依次验证：`/web`、STA 登录、静态资源、错误密码限速、白名单命令、配置脱敏、AP-only 首次设置、`/web reset-password`、网页触发 handoff 和 30 秒死循环复位。多后台任务至少验证两个 worker 同时运行、前台代码与 worker 输出不串线、`/background list|stop ID|note|discard`、无限任务协作停止、队列升槽，以及退出后 `builtins.print`/`__harness_check`/`time` 已恢复。不要默认发送真实 LLM 请求；它会使用用户凭据并计费。真实 LLM 压力测试需要用户明确授权，并让串口与网页测试分阶段进行、不要同时占用设备；建议先完成串口长对话，再重置并通过网页 API/浏览器做独立的长对话、取消和标签切换测试。免费或排队严重的网关可能对 600 字以上的提示连续返回响应头超时；测试时保持每条约 120–200 字、要求 500 字以上回答，并适当提高 `api_retries`、降低 thinking，测完恢复原配置。
+真实设备测试建议依次验证：`/web`、STA 登录、静态资源、错误密码限速、非交互命令和确认流程、配置脱敏、AP-only 首次设置、`/web reset-password`、网页触发 handoff 和 30 秒死循环复位。多后台任务至少验证两个 worker 同时运行、前台代码与 worker 输出不串线、`/background list|stop ID|note|discard`、无限任务协作停止、队列升槽，以及退出后 `builtins.print`/`__harness_check`/`time` 已恢复。不要默认发送真实 LLM 请求；它会使用用户凭据并计费。真实 LLM 压力测试需要用户明确授权，并让串口与网页测试分阶段进行、不要同时占用设备；建议先完成串口长对话，再重置并通过网页 API/浏览器做独立的长对话、取消和标签切换测试。免费或排队严重的网关可能对 600 字以上的提示连续返回响应头超时；测试时保持每条约 120–200 字、要求 500 字以上回答，并适当提高 `api_retries`、降低 thinking，测完恢复原配置。
 
 MicroPython 兼容注意：不要调用 `Exception.__init__(self, message)`，ESP32 移植会报 `AttributeError: type object 'Exception' has no attribute '__init__'`。自定义异常只需定义 `__init__` 并设置属性（必要时覆盖 `__str__`）。Web 线程使用 32 KB 栈，后台 worker 默认也用 32 KB 栈；创建 worker 前会设置 `_thread.stack_size`，测试时务必在真实板验证两个任务同时运行和内存余量。`socket.getsockname()` 在 MicroPython 不可用，固定端口或捕获 `AttributeError`。`str.isalnum()` 在 1.29 不可用，使用显式字符范围。`network.STAT_*` 在 1.29 中是 `STAT_NO_AP_FOUND=201`、`STAT_WRONG_PASSWORD=202`、`STAT_CONNECTING=1001`、`STAT_GOT_IP=1010` 等，不是 0–5；ESP-IDF 在新连接扫描期间可能沿用上一次的断开原因，判定失败前要给驱动留出稳定窗口。MicroPython 的内建模块不一定会出现在 `sys.modules`，测试全局 `time` 恢复时应允许条目缺失。
 
@@ -82,7 +81,7 @@ python tools/check.py --quick
 python tools/check.py --tests tests.test_agent tests.test_conversation -k ask
 ```
 
-`tools/check.py` 等价于 `compileall device tools tests` 加对应的 `unittest` 命令，不访问设备。当前有 526 项主机测试。主机依赖和与固件 `_mpy` 匹配的 `mpy-cross`：
+`tools/check.py` 等价于 `compileall device tools tests` 加对应的 `unittest` 命令，不访问设备。当前有 515 项主机测试。主机依赖和与固件 `_mpy` 匹配的 `mpy-cross`：
 
 ```powershell
 python -m venv .venv
@@ -106,7 +105,7 @@ python tools/deploy.py --port <PORT> --changed --no-reset
 mpremote connect <PORT> run tools/device_quick_smoke.py
 ```
 
-`--changed` 用 `build/deploy-manifest.json` 比较内容哈希，只编译/上传变化的模块，并删除被替换模块的旧 `.py`/`.mpy`；第一次运行或没有清单时仍完整部署。`device_quick_smoke.py` 只检查导入、关键默认值、一次 Fake Agent 回合和一次微型执行，不启动 Web 线程、不测网络/外设，不写持久对话。涉及 Web 线程、handoff、硬件缓存、真实外设或发布前，仍要跑完整流程：
+`--changed` 用 `build/deploy-manifest.json` 比较内容哈希，只编译/上传变化的模块，并删除被替换模块的旧 `.py`/`.mpy`；清单同时跟踪 `certs/ca-bundle.pem`，bundle 变化时重新复制 `/ca.pem`。第一次运行或没有清单时仍完整部署。`device_quick_smoke.py` 只检查导入、关键默认值、一次 Fake Agent 回合和一次微型执行，不启动 Web 线程、不测网络/外设，不写持久对话。涉及 Web 线程、handoff、硬件缓存、真实外设或发布前，仍要跑完整流程：
 
 ```powershell
 python tools/deploy.py --port <PORT> --no-reset
@@ -118,7 +117,7 @@ python tools/input_smoke.py --port <PORT>
 
 部署器默认构建并复制 `.mpy`，不会把主机 `__pycache__` 带到设备。`--source` 可部署 `.py`，适用于小型调试；发布版本优先使用 `.mpy`。
 
-`--clean` 会清空 VFS（包括配置、CA、技能），只应在明确允许时使用。
+`--clean` 会清空 VFS（包括配置、CA、技能），随后部署器会重新复制公共 CA；只应在明确允许时使用。
 
 ## 设备代码约定
 

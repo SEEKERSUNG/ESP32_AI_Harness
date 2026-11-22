@@ -1312,15 +1312,27 @@ function sendChat(event){
   scrollPageBottomSoon();
   stream('/api/chat',{text:text});
 }
+function runCommand(line,confirmed){
+  post('/api/command',{line:line,confirm:!!confirmed}).then(function(data){
+    if(data.output) commandLog(data.output);
+    if(data.ok===false) commandLog('错误: '+(data.error||'命令失败'));
+    refreshStatus().catch(function(){});
+  }).catch(function(err){
+    var data=err.data||{};
+    if(data.code==='confirm'&&!confirmed){
+      if(window.confirm((data.error||'确认执行该命令？')+'\n\n'+line)){
+        runCommand(line,true); return;
+      }
+      commandLog('已取消: '+line); return;
+    }
+    commandLog('错误: '+err.message);
+  });
+}
 function sendCommand(event){
   if(event) event.preventDefault();
   var input=$('commandInput'); var line=input.value.trim(); if(!line) return;
   input.value=''; commandLog('esp32> '+line);
-  post('/api/command',{line:line}).then(function(data){
-    if(data.output) commandLog(data.output);
-    if(data.ok===false) commandLog('错误: '+(data.error||'命令失败'));
-    refreshStatus().catch(function(){});
-  }).catch(function(err){commandLog('错误: '+err.message);});
+  runCommand(line,false);
 }
 function showLogin(){state.authed=false;state.historyLoaded=false;state.liveUserEl=null;stopBackgroundPoll();show($('loginView'),true);show($('setupView'),false);show($('mainView'),false);show($('settingsView'),false);
   var note=state.setupInfo&&state.setupInfo.reset_note;
@@ -1368,7 +1380,7 @@ function loadConfig(){
     $('cfgAutoFeedback').checked=!!cfg.auto_feedback;
     $('cfgBackground').checked=cfg.background_execution!==false;
     $('cfgBackgroundMax').value=cfg.background_max_jobs||4;
-    $('cfgMaxTurns').value=cfg.max_turns||8;
+    $('cfgMaxTurns').value=cfg.max_turns||32;
     $('cfgPersistConversation').checked=cfg.persist_conversation!==false;
     $('cfgSearchEnabled').checked=cfg.search_enabled!==false;
     $('cfgSearchProvider').value=cfg.search_provider||'auto';
@@ -1482,7 +1494,7 @@ document.addEventListener('DOMContentLoaded',function(){
     var cfg=state.config||{};
     var currentAuto=(state.status&&state.status.auto)||{};
     var run=typeof cfg.auto_run==='boolean'?cfg.auto_run:!!currentAuto.run;
-    post('/api/config',{show_thinking:$('cfgShowThinking').checked,background_execution:$('cfgBackground').checked,background_max_jobs:parseInt($('cfgBackgroundMax').value,10)||4,max_turns:parseInt($('cfgMaxTurns').value,10)||8,persist_conversation:$('cfgPersistConversation').checked}).then(function(){
+    post('/api/config',{show_thinking:$('cfgShowThinking').checked,background_execution:$('cfgBackground').checked,background_max_jobs:parseInt($('cfgBackgroundMax').value,10)||4,max_turns:parseInt($('cfgMaxTurns').value,10)||32,persist_conversation:$('cfgPersistConversation').checked}).then(function(){
       return post('/api/auto',{
         auto_run:run,
         auto_feedback:$('cfgAutoFeedback').checked,

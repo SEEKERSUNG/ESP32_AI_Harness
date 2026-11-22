@@ -9,7 +9,7 @@
 
 A local MicroPython agent harness that runs entirely on an **ESP32-S3 N16R8 (16 MB flash + 8 MB octal PSRAM)**. The serial console, web console, conversation history, API requests, code review, local execution, skills, memory and remote MCP tools all live on the board. A cloud OpenAI-compatible or Anthropic Messages API is used only for model inference.
 
-> **Security notice:** Generated code runs with the full privileges of the MicroPython process and is **not sandboxed**. The web console is **plain HTTP** and is intended for trusted LANs only. Peripherals and auto-run are disabled by default. Read [Safety, recovery and limitations](docs/safety.md) and [Web console](docs/web.md) before exposing the device.
+> **Security notice:** Generated code runs with the full privileges of the MicroPython process and is **not sandboxed**; it can drive hardware directly with `machine`/`neopixel`. The web console is **plain HTTP** and is intended for trusted LANs only. Auto-run is disabled by default. Read [Safety, recovery and limitations](docs/safety.md) and [Web console](docs/web.md) before exposing the device.
 
 ## Contents
 
@@ -33,14 +33,14 @@ A local MicroPython agent harness that runs entirely on an **ESP32-S3 N16R8 (16 
 - **Everything runs on the board** — after deployment, unplug the PC and keep using the device from a browser or serial terminal.
 - **Review before execution** — generated Python is shown, confirmed and only then executed. Auto-run is an explicit opt-in.
 - **Search follows the model API** — OpenAI-compatible and Anthropic Messages endpoints are supported. In AUTO mode, native provider search is selected automatically; endpoints without server-side search use keyless Bing.
-- **Controlled hardware access** — generated code reaches configured peripherals only through the global `api` object. It cannot `import machine` or use raw pins.
+- **Native MicroPython hardware access** — generated code imports `machine`, `neopixel`, `framebuf` and other standard modules directly. There is no global `api` object, peripheral allowlist or `/peripherals` setup step.
 - **Full control surface** — serial keeps every capability; the web console covers everyday chat, configuration, history and background jobs.
 
 ## Features
 
 **Interaction and control**
 
-- **Two consoles** — the serial `esp32>` prompt handles natural-language tasks and `/` commands. The built-in web console supports login, streaming chat, stop, whitelisted commands, history, Wi-Fi/model/API key/CA/admin-password changes and factory reset.
+- **Two consoles** — the serial `esp32>` prompt handles natural-language tasks and `/` commands. The built-in web console supports login, streaming chat, stop, `/` commands from the command page, history, Wi-Fi/model/API key/CA/admin-password changes and factory reset.
 - **AP provisioning** — on first use or Wi-Fi failure the board starts a WPA2 AP (`ESP32-Harness-XXXX` / `esp32setup`). Connect a phone or laptop to configure Wi-Fi, the model and the admin password.
 - **Streaming responses** — SSE streaming by default with live reasoning and content. Thinking levels are off/Low/High/Max; High is the default and is persisted. `show_thinking` is on by default and can be hidden with `/thinking show off`.
 - **Persistent context and rewind** — committed messages and compaction summaries are written atomically to `/state/conversation.json` and restored after reboot. `/undo [N]` (alias `/rewind`) and the web rewind buttons remove conversation context only; they do not undo device side effects.
@@ -56,10 +56,10 @@ A local MicroPython agent harness that runs entirely on an **ESP32-S3 N16R8 (16 
 
 **Execution and hardware**
 
-- **Confirmation-gated execution** — generated Python is compiled and executed on the device after confirmation. Optional auto-run and auto-feedback are bounded by `max_turns` (default 8).
+- **Confirmation-gated execution** — generated Python is compiled and executed on the device after confirmation. Optional auto-run and auto-feedback are bounded by `max_turns` (default 32).
 - **Cooperative timeouts** — the default execution timeout is 20 seconds. `range()`, `time.sleep()`, `while True` and explicit `__harness_check()` stop at the deadline or a stop request and return `status=timeout`/`cancelled`; an ordinary timeout does not reboot the board.
 - **Multiple background jobs** — prefer foreground execution for short programs. Long-running work can use dedicated worker threads (four by default) while the serial main thread keeps handling chat and web requests. Stop is cooperative; blocking C/SPI calls still wait for the watchdog.
-- **Peripheral API** — GPIO, I2C, SPI, UART, NeoPixel, ADC, PWM, capacitive touch and RTC writes are disabled until explicitly configured with `/peripherals`. Generated code receives a controlled global `api` object: `api.gpio/spi/i2c/uart/neopixel/adc/pwm/touch/rtc/pulse/system`.
+- **Native hardware access** — generated code uses MicroPython's `machine` (`Pin`, `SPI`, `I2C`, `UART`, `PWM`, `ADC`, `TouchPad`, `RTC`, `time_pulse_us`), `neopixel`, `framebuf`, `esp` and `esp32` directly. There is no `api` object, pin allowlist or `/peripherals` command. Reserved pins (flash/PSRAM, USB, console UART, strapping) must still be avoided according to the wiring instructions.
 
 **Reliability**
 
@@ -143,7 +143,7 @@ For a first deploy, or when you explicitly allow clearing the VFS:
 python tools/deploy.py --port COMx --clean
 ```
 
-The deployer only writes MicroPython VFS files. It does not erase flash or modify firmware or partitions. It builds and copies `.mpy` files by default; use `--source` to deploy source. `--clean` deletes device configuration, CA and skills, so use it only when explicitly allowed.
+The deployer only writes MicroPython VFS files. It does not erase flash or modify firmware or partitions. It builds and copies `.mpy` files by default and copies `certs/ca-bundle.pem` to `/ca.pem`; use `--source` to deploy source. `--clean` deletes device configuration and skills (the public CA is copied afterwards), so use it only when explicitly allowed.
 
 If the `esp32>` console is running, enter `/repl` and confirm first; the deployer clears the maintenance flag and reboots the board automatically.
 
@@ -159,15 +159,7 @@ The repository also includes a serial terminal that chunks input on UTF-8 bounda
 python tools/serial_console.py --port COMx
 ```
 
-On first use, if the device does not have `/ca.pem` yet, install the Mozilla CA bundle first (the full bundle exceeds the serial paste limit, so copy it as a file):
-
-```powershell
-python tools/force_raw.py --port COMx
-mpremote connect COMx fs cp certs/ca-bundle.pem :ca.pem
-mpremote connect COMx reset
-```
-
-Then reconnect and run:
+The deployer automatically copies `certs/ca-bundle.pem` to `/ca.pem` (full deploys, `--clean`, and the first incremental deploy; `--changed` refreshes it when the bundle changes), so manual CA installation is usually unnecessary. Then run:
 
 ```text
 /setup
@@ -201,14 +193,7 @@ CA:         /ca.pem
 
 Both OpenAI-compatible and Anthropic paths send a stable `x-opencode-session: ses_...` header (required by gateways such as OpenCode Go) and an `esp32-harness/0.4` User-Agent. `/clear` rotates the session ID.
 
-The repository includes public root certificates:
-
-```text
-certs/ca-bundle.pem                 # full Mozilla bundle, recommended
-certs/digicert-global-root-g2.pem   # minimal DigiCert root
-```
-
-The full bundle works across API providers and public HTTPS services; the minimal root is enough when the endpoint is fixed to DeepSeek. See [CA certificates](certs/README.md) for installation and switching. **If you do not need a custom CA, leave it as is**: once the full bundle is at `/ca.pem`, there is no need to upload it again in the web UI or serial console. Keep the current path and TLS verification enabled. The web UI places custom CA settings in a collapsed “Advanced” section and only expands a warning when no CA file is present.
+The deployer automatically installs `certs/ca-bundle.pem` (the full Mozilla public root bundle) at `/ca.pem`, so changing API endpoints or using multiple public HTTPS services usually requires no CA changes. **If you do not need a custom CA, leave it as is**: there is no need to upload it again in the web UI or serial console. Keep the current path and TLS verification enabled. The web UI places custom CA settings in a collapsed “Advanced” section and only expands a warning when no CA file is present. Private CAs, enterprise networks and self-hosted APIs still require replacing it as described in [CA certificates](certs/README.md); a full deploy overwrites `/ca.pem` with the public bundle, so reinstall a private CA after deployment.
 
 ## Web console
 
@@ -227,7 +212,7 @@ Password: esp32setup   # default; change it after setup
 URL:  http://192.168.4.1/
 ```
 
-The first visit asks for an admin password and optionally Wi-Fi and model settings. After login you can chat, run whitelisted `/` commands and change configuration. The UI follows the system light/dark theme and works on phones and desktops. The chat/command navigation stays at the bottom; the Thinking selector and AUTO switch sit next to the composer. When the model calls `__ask`, a question card offers the choices plus a free-form answer. Code, execution output and local history records are collapsed by default; streaming text refreshes every 32 characters by default.
+The first visit asks for an admin password and optionally Wi-Fi and model settings. After login you can chat, run `/` commands from the web command page and change configuration. The UI follows the system light/dark theme and works on phones and desktops. The chat/command navigation stays at the bottom; the Thinking selector and AUTO switch sit next to the composer. When the model calls `__ask`, a question card offers the choices plus a free-form answer. Code, execution output and local history records are collapsed by default; streaming text refreshes every 32 characters by default.
 
 Web and serial share history; only one model turn runs at a time. When changing Wi-Fi, the device starts its AP first; the first save takes roughly 2–5 seconds to scan and associate. A brief page disconnect or a stale error does not necessarily mean failure — check the `Wi-Fi:` line in `/status`. If you forget the admin password, run:
 
@@ -257,7 +242,7 @@ After the model returns code:
 /continue 1 # commit job 1's result and continue the conversation
 ```
 
-Execution results are fed back to the model according to configuration; subsequent fixes still require `/run` confirmation. Auto-feedback turns are bounded by `max_turns` (default 8; change with `/auto turns N` or in the web settings). The default execution timeout is 20 seconds. The model can put `timeout=45` on the same line as the opening code fence to request a longer deadline (maximum `code_timeout_max_s=300`). A timeout returns `status=timeout` and lets the model continue; it does not reboot the board on an ordinary timeout. Long loops should call `__harness_check()`; `range()`, `time.sleep()` and `while True` are instrumented automatically.
+Execution results are fed back to the model according to configuration; subsequent fixes still require `/run` confirmation. Auto-feedback turns are bounded by `max_turns` (default 32; change with `/auto turns N` or in the web settings). The default execution timeout is 20 seconds. The model can put `timeout=45` on the same line as the opening code fence to request a longer deadline (maximum `code_timeout_max_s=300`). A timeout returns `status=timeout` and lets the model continue; it does not reboot the board on an ordinary timeout. Long loops should call `__harness_check()`; `range()`, `time.sleep()` and `while True` are instrumented automatically.
 
 Background jobs run on their own worker threads, suitable for long-running work or when the user wants to keep interacting. Prefer the foreground for short programs. Stop is cooperative: it sets a cancellation flag and raises `ExecutionCancelled` at checkpoints. A job blocked inside a C/SPI call may only stop after a reboot. `timeout=0`/`infinite` allows a background job to run without a harness deadline, but does not suspend the 30-second watchdog.
 
@@ -284,7 +269,7 @@ Automatic compaction starts at about 150000 tokens; `context_tokens` is 200000. 
 | `/thinking [level]` | Show or set thinking: disable/low/high/max (default high) |
 | `/thinking show on\|off` | Show or hide reasoning text |
 | `/auto [on\|off]` | Auto-run generated code and auto-feedback |
-| `/auto turns N` | Set the maximum auto-feedback turns (default 8, range 1–50) |
+| `/auto turns N` | Set the maximum auto-feedback turns (default 32, range 1–50) |
 | `/run` / `/run bg [note]` / `/continue [id]` | Run in the foreground, create a background job, or continue a result |
 | `/background [list\|status ID\|stop [ID]\|note ID TEXT\|discard ID]` | Inspect and manage background jobs |
 | `/undo [N]` / `/rewind [N]` | Remove the Nth most recent user message and everything after it |
@@ -293,7 +278,6 @@ Automatic compaction starts at about 150000 tokens; `context_tokens` is 200000. 
 | `/memory` | Show the always-loaded `/MEMORY.md` |
 | `/skills` / `/skill-show` / `/skill-delete` | Manage skills |
 | `/workspace` | Inspect and manage the shared workspace |
-| `/peripherals` | Configure GPIO/I2C/SPI/UART/NeoPixel/ADC/PWM/touch/RTC |
 | `/search <query>` | Run a web search manually |
 | `/search provider auto\|bing` | Choose the search provider |
 | `/search on\|off` | Enable or disable web search |
@@ -304,7 +288,7 @@ Automatic compaction starts at about 150000 tokens; `context_tokens` is 200000. 
 | `/web` / `/web reset-password` | Show web status / reset the admin password |
 | `/factory-reset` | Delete user data and reboot (requires typing `RESET`) |
 
-See the [command reference](docs/commands.md) for the full command set, whitelist and interaction rules.
+See the [command reference](docs/commands.md) for the full command set, web command limits and interaction rules.
 
 ### MCP example
 
@@ -328,7 +312,7 @@ device/       MicroPython code deployed to the device VFS
 tests/        CPython unit tests (fake device/cloud services)
 tools/        Deployment, serial terminal, smoke tests and maintenance tools
 docs/         Architecture, usage, extension and security documentation
-certs/        Public root certificates and the Mozilla CA bundle
+certs/        Mozilla CA bundle (installed automatically during deployment)
 ```
 
 ## Documentation
@@ -338,14 +322,14 @@ certs/        Public root certificates and the Mozilla CA bundle
 | [Documentation index](docs/README.md) | Reading order by usage, implementation, extension and security |
 | [Architecture and execution flow](docs/architecture.md) | Thread model, sessions, context budget, execution flow |
 | [Deployment and setup](docs/setup.md) | Firmware, deployment, serial, Wi-Fi/model/CA configuration |
-| [Command reference](docs/commands.md) | Serial and web commands, whitelist, typical flows |
+| [Command reference](docs/commands.md) | Serial and web commands, confirmation rules, typical flows |
 | [Web console and AP provisioning](docs/web.md) | HTTP API, NDJSON, AP state machine, security boundaries |
 | [Skills](docs/skills.md) | Markdown instruction packages, progressive loading |
 | [MEMORY.md](docs/memory.md) | Always-loaded project context |
 | [Anthropic Messages API](docs/anthropic.md) | Protocol mapping, thinking, headers and limits |
 | [Remote MCP tools](docs/mcp.md) | Streamable HTTP, configuration, confirmation and limits |
 | [Workspace](docs/workspace.md) | Persistent files and temporary storage |
-| [Hardware API for generated code](docs/hardware.md) | `api.gpio/spi/i2c/uart/neopixel/adc/pwm/touch/rtc/pulse/system`, configuration and an ST7735 example |
+| [Hardware access for generated code](docs/hardware.md) | `machine`/`neopixel`/`framebuf`, GPIO/SPI/I2C/UART/PWM/ADC/touch/RTC and an ST7735 example |
 | [Development, testing and debugging](docs/development.md) | Test matrix, device conventions, API debugging |
 | [Adding peripherals or model providers](docs/extending.md) | Extension points |
 | [Safety, recovery and limitations](docs/safety.md) | Threat model, watchdog, secrets and device boundaries |
@@ -384,7 +368,7 @@ See [Development, testing and debugging](docs/development.md) for the test matri
 - **The web console is plain HTTP** — use it only on a trusted LAN and never port-forward it to the public Internet. Admin passwords, cookies, conversations and configuration can be sniffed on the LAN.
 - **Secrets live on the device** — `/secrets.json` and `/mcp.json` are plaintext files (MCP headers may contain tokens) and can be read over serial or with physical access. `/status`, `/api/status`, `/api/config` and `/api/mcp` return only `_set` booleans or header names.
 - **Conversations are persisted** — `/state/conversation.json` stores committed messages and summaries that may contain sensitive user text. `/state/background.json` stores up to `background_max_records` (default 8) bounded background records and output until continued or discarded. Persistence can be disabled in the web settings; `/clear` and factory reset delete them.
-- **Peripherals are off by default** — only explicitly configured GPIO/I2C/SPI/UART/NeoPixel/ADC/PWM/touch resources are available; reserved pins remain protected.
+- **Native hardware is directly accessible** — generated code can drive real pins with `machine`/`neopixel`. Wrong wiring, voltage or use of flash/PSRAM, USB, console UART or strapping pins can damage peripherals or prevent the board from booting normally; verify the wiring before confirming execution.
 - **Auto-run is off by default** — `auto_run` requires an explicit opt-in and confirmation and can cause multiple billed requests; MCP `auto` requires confirmation as well.
 - **Timeouts are not a hard sandbox** — `range()`, `time.sleep()`, `while True` and `__harness_check()` can stop cooperatively. C-level blocking calls or complex `while` conditions that bypass every hook may still be reset by the 30-second watchdog. The Stop button stops receiving and subsequent turns; it cannot force-kill Python code that has already started.
 

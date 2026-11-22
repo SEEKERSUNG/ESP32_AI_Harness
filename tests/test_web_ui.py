@@ -113,6 +113,12 @@ class WebUiTests(unittest.TestCase):
         self.assertNotIn("search_api_key_clear", APP_JS)
         self.assertIn("http_tool_enabled", APP_JS)
 
+    def test_web_command_confirmation_flow(self):
+        self.assertIn("function runCommand", APP_JS)
+        self.assertIn("data.code==='confirm'", APP_JS)
+        self.assertIn("runCommand(line,true)", APP_JS)
+        self.assertIn("confirm:!!confirmed", APP_JS)
+
     def test_auto_toggle_is_confirmed_and_preserves_feedback(self):
         self.assertIn("function changeAuto", APP_JS)
         self.assertIn("AUTO 会自动运行模型生成的代码", APP_JS)

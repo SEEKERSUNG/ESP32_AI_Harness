@@ -11,7 +11,7 @@
 
 模型可以通过内置的 `__workspace` 工具操作工作区。查看目录或读取文件时应直接调用 `summary`/`list`/`read`/`stat`；不要为了“看一眼 Workspace”生成 `import os` 再 `listdir`/`open` 的 Python 代码，只有确实需要对文件内容做计算时才生成代码。
 
-> 旧版模型自定义 Tool 已移除。生成代码会获得全局 `api` 对象用于已配置外设（`api.gpio`/`api.spi` 等），但没有 `api.workspace`；工作区文件操作请使用 `__workspace`，生成代码不要 `import machine`。`api` 直接使用即可；为兼容旧代码，`import api` 也会返回同一对象。
+> 旧版模型自定义 Tool 已移除。工作区文件操作请使用 `__workspace`；生成代码需要硬件时直接 `import machine`/`neopixel` 等 MicroPython 原生模块。没有 `api` 对象，也没有 `api.workspace`。
 
 ````text
 ```tool
@@ -50,7 +50,7 @@
 - 用户说“保存 / 记录 / 以后要用”时，写入 `/workspace` 持久区。
 - 解析中间结果、临时脚本、一次性数据写入 `/workspace/tmp`。
 - 工作区脚本是数据，不会自动执行。开启 `/auto run on` 后，模型可用 `__workspace run` 直接执行 `.py` 文件并把输出作为工具结果；未开启时，Harness 会显示源码并等待串口确认，拒绝则取消执行。执行超时是 JSON `args.timeout` 字段（可选，受 `code_timeout_max_s` 限制），与 Python 代码块开围栏上的 `timeout=` 注解相互独立。`__workspace run` 和串口 `/workspace run` 都读取完整脚本，上限是 `workspace_file_limit`；`code_limit` 只限制模型生成的 python 代码块，不限制已经写入工作区的脚本。
-- 短脚本优先前台执行。长时间运行或需要与用户继续交互时，传入 `"background": true`（或串口 `/workspace run bg <path>`）创建后台任务；后台脚本仍受 `background_execution`、最大并发、协作停止和看门狗约束，`timeout=0` 只表示无截止时间，不是硬杀。后台任务运行时，前台 `__workspace run` 仍通过主线程 handoff 执行；避免与后台任务同时读写同一个工作区文件。脚本访问外设时只能使用全局 `api` 对象，不能 `import machine`。
+- 短脚本优先前台执行。长时间运行或需要与用户继续交互时，传入 `"background": true`（或串口 `/workspace run bg <path>`）创建后台任务；后台脚本仍受 `background_execution`、最大并发、协作停止和看门狗约束，`timeout=0` 只表示无截止时间，不是硬杀。后台任务运行时，前台 `__workspace run` 仍通过主线程 handoff 执行；避免与后台任务同时读写同一个工作区文件。脚本访问硬件时直接 `import machine`/`neopixel` 等 MicroPython 原生模块。
 - 不要把密钥、Wi-Fi 密码或 API Key 写进工作区；这些仍属于 `secrets.json`。
 - 写入前先 `list`/`stat`，避免误覆盖用户文件。
 

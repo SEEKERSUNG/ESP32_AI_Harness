@@ -1,5 +1,8 @@
+import sys
 import time
+import types
 import unittest
+from unittest import mock
 
 from harness.executor import (
     BufferWriter,
@@ -36,17 +39,16 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(1, recovery.started)
         self.assertEqual(1, recovery.ended)
 
-    def test_hardware_api_is_available_to_generated_code(self):
-        class FakeAPI:
-            def status(self):
-                return {"enabled": True}
-
-        result = Executor(DummyBoard(), api=FakeAPI()).execute(
-            "print(api.status()['enabled'])")
+    def test_generated_code_can_import_machine(self):
+        machine = types.ModuleType("machine")
+        machine.freq = lambda: 240000000
+        with mock.patch.dict(sys.modules, {"machine": machine}):
+            result = Executor(DummyBoard()).execute(
+                "import machine\nprint(machine.freq())")
         self.assertTrue(result.ok)
-        self.assertIn("True", result.output)
+        self.assertIn("240000000", result.output)
 
-    def test_hardware_api_is_absent_without_a_manager(self):
+    def test_api_global_is_not_injected(self):
         result = Executor(DummyBoard()).execute("print(api)")
         self.assertFalse(result.ok)
         self.assertIn("api", result.error)

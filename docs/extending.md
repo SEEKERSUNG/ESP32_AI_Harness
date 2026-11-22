@@ -1,17 +1,17 @@
 # 增加外设、Skill、模型供应商或 MCP
 
-## 增加外设能力
+## 增加外设驱动
 
-外设默认关闭，必须通过 `/peripherals` 显式配置。生成代码通过受控的全局 `api` 对象（`HardwareAPI`）访问已配置硬件：`api.gpio`、`api.spi`、`api.i2c`、`api.uart`、`api.neopixel`、`api.adc`；所有调用仍经过启用开关、允许引脚、总线配置和传输大小限制。添加一种新总线或驱动时：
+生成代码直接使用 MicroPython 原生外设库（`machine`、`neopixel`、`framebuf` 等），Harness 不再维护 `api` 对象、外设 allowlist 或 `/peripherals` 配置。添加或记录一种外设时：
 
-1. 在 `hardware.py` 增加配置校验、保留引脚规则、`HardwareManager` 底层方法和 `HardwareAPI` 包装方法；
-2. 在 `console.py` 的 `/peripherals` 子命令中登记配置入口，并更新 `Board.capabilities()` 与系统提示词中的 `api` 能力说明；
-3. 记录引脚、电压、有效电平、允许范围和安全状态；
-4. 对输出限幅、超时、断联安全使用明确规则；
-5. 添加 host Fake 测试和真实硬件测试，先空载，再连接执行器；
-6. 更新 `docs/setup.md`、`docs/commands.md`、`docs/safety.md` 和本文。
+1. 在生成代码中直接 `import machine` 或目标驱动模块，使用真实引脚；不要重新引入 `/peripherals` 或 `HardwareAPI`，除非用户明确要求；
+2. 在 `docs/hardware.md` 记录接线、电压、有效电平、时序、地址和安全注意事项；
+3. 对输出限幅、超时、断联和重复初始化给出明确规则；
+4. 如果固件不包含目标模块，按固件维护流程单独构建镜像；不要用生成代码动态安装包；
+5. 在真实板上先空载验证，再连接负载，并保留可恢复的最小测试脚本；
+6. 更新 `docs/hardware.md`、`docs/setup.md`、`docs/safety.md` 和本文。
 
-高风险负载不应仅依赖模型自律或串口确认。硬件层只暴露已配置的引脚和总线，但不是完整的电气安全层。
+原生硬件访问不是电气安全层。确认机制只防止误执行，不能防止错误接线、错误电压或对 Flash/PSRAM、USB、控制台 UART、strapping 引脚的误用。
 
 ## 增加 Skill
 

@@ -8,7 +8,7 @@
 - 修改、删除 Harness 和配置文件；
 - 读取 `secrets.json`；
 - 发起网络连接；
-- 在声明外设后操作硬件。
+- 直接操作任何 GPIO、总线或外设，包括 Flash/PSRAM、USB 和控制台 UART 相关引脚。
 
 不要执行来源不明或未审查的代码。`try/except` 不能解决硬 fault、死循环和全部内存问题。
 
@@ -29,8 +29,8 @@
 
 ## TLS 与秘密
 
-- 默认 `tls_verify = true`，使用 SNI 和 CA 验证；Web 将自定义 CA 折叠为高级项只是简化界面，不会关闭验证；全量 bundle 已安装时保持 `/ca.pem` 即可；
-- `/ca.pem` 可以安装 Mozilla 全量公共根证书 bundle，兼容多个 HTTPS 端点；这也会信任所有收录的公共 CA，比固定单一根证书的信任面更大；
+- 默认 `tls_verify = true`，使用 SNI 和 CA 验证；Web 将自定义 CA 折叠为高级项只是简化界面，不会关闭验证；部署器会自动安装全量 bundle，保持 `/ca.pem` 即可；
+- `/ca.pem` 可以安装 Mozilla 全量公共根证书 bundle，兼容多个 HTTPS 端点；这也会信任所有收录的公共 CA，比只安装所需根证书的信任面更大；
 - 私有 CA、企业内网或自建 API 仍需单独安装对应根证书；
 - `CERT_REQUIRED` 依赖正确 RTC，因此优先同步 NTP，RTC 仍有效时允许 NTP 暂时失败；
 - 关闭验证会暴露 API Key、对话和代码给中间人；
@@ -51,9 +51,9 @@
 - 所有 POST 要求 `X-Harness: 1`、精确 `Origin` 和 JSON Content-Type；Host 必须匹配当前 STA/AP IP、`127.0.0.1` 或 `localhost`；不发送 CORS 头。Cookie 为 `HttpOnly; SameSite=Strict`，HTTP 下没有 `Secure`。
 - 管理员可以修改 `base_url`，从而把已保存的 API Key 发往新地址；管理员权限约等于凭据控制权。不要把管理员密码交给不可信的人。
 - 网页触发的生成代码与串口 `/run` 拥有相同的完整 MicroPython 权限；网页自动模式与 `/auto` 共用全局配置，会自动执行代码并产生多次计费请求。普通超时由协作式截止时间停止；不经过钩子的死循环仍由看门狗复位。
-- 后台执行最多同时运行 `background_max_jobs` 个任务（默认 4，可设 1–4），每个任务在自己的 worker 线程；它不改变权限、超时或看门狗规则。任务无法被硬杀：AI 的 `__background stop`、网页停止按钮、`/background stop` 和 `POST /api/background/stop` 只设置协作取消标志，在 `__harness_check()`、`range`、`while True` 或 `time.sleep()` 检查点抛出 `ExecutionCancelled`；阻塞在 C/SPI 调用中的任务可能只能重启设备。`timeout=0`/`infinite` 允许后台无截止时间运行，但必须依赖这些检查点和显式停止，30 秒看门狗仍是最后防线。后台任务可与新对话、前台代码以及其他后台任务并行，因此代码之间可能竞争文件、网络和全局状态；不要同时写同一文件，生成代码只能通过全局 `api` 对象访问已配置外设，禁止 `import machine`。后台输出通过线程级 `print` 捕获，直接写 `sys.stdout` 可能丢失。后台记录写入 `/state/background.json`，完成但尚未继续的输出会在设备重启后保留，直到继续、丢弃、`/clear` 或恢复出厂设置；未完成记录在重启后变为 error 且不会自动重跑。并发任务不写单一的 `recovery.py` 标记，避免互相覆盖；复位后源码仍在对话历史中，可由用户重新审查。结果观察会标注原任务和其他仍在运行的任务；若其间留下待执行代码、Skill 或问题，自动继续会等待其处理完毕。AUTO 模式且 `auto_feedback=true` 时由设备主线程自动继续完成结果（不依赖网页保持打开），仍会产生计费模型请求；手动模式保留网页“继续/丢弃”选择。
+- 后台执行最多同时运行 `background_max_jobs` 个任务（默认 4，可设 1–4），每个任务在自己的 worker 线程；它不改变权限、超时或看门狗规则。任务无法被硬杀：AI 的 `__background stop`、网页停止按钮、`/background stop` 和 `POST /api/background/stop` 只设置协作取消标志，在 `__harness_check()`、`range`、`while True` 或 `time.sleep()` 检查点抛出 `ExecutionCancelled`；阻塞在 C/SPI 调用中的任务可能只能重启设备。`timeout=0`/`infinite` 允许后台无截止时间运行，但必须依赖这些检查点和显式停止，30 秒看门狗仍是最后防线。后台任务可与新对话、前台代码以及其他后台任务并行，因此代码之间可能竞争文件、网络和全局状态；不要同时写同一文件，也不要让多个任务同时驱动同一条 SPI/I2C 总线或同一设备。后台输出通过线程级 `print` 捕获，直接写 `sys.stdout` 可能丢失。后台记录写入 `/state/background.json`，完成但尚未继续的输出会在设备重启后保留，直到继续、丢弃、`/clear` 或恢复出厂设置；未完成记录在重启后变为 error 且不会自动重跑。并发任务不写单一的 `recovery.py` 标记，避免互相覆盖；复位后源码仍在对话历史中，可由用户重新审查。结果观察会标注原任务和其他仍在运行的任务；若其间留下待执行代码、Skill 或问题，自动继续会等待其处理完毕。AUTO 模式且 `auto_feedback=true` 时由设备主线程自动继续完成结果（不依赖网页保持打开），仍会产生计费模型请求；手动模式保留网页“继续/丢弃”选择。
 - `/undo` 和网页回退只删除对话上下文，不回滚已经执行的 GPIO、文件、网络或其他设备副作用；它还会清除待执行代码、Skill 提案、待回答问题和最近执行结果。后台任务运行期间不能回退。
-- 网页 `/api/command` 只执行白名单命令；`/setup`、`/repl`、`/wifi`、`/model`、`/ca`、`/test`、`/run`、删除命令、Memory 写操作和 Workspace 写/执行必须使用串口或专用 Web API。回退可通过白名单命令 `/undo`/`/rewind` 或专用 `POST /api/rewind`；后台继续使用专用 `POST /api/continue`，不经过 `/api/command`。
+- 网页 `/api/command` 接受配置、Memory/Skill/Workspace 写入、MCP、后台控制、`/http`、`/run`、`/run bg`、`/workspace run` 和 `/continue` 等命令；风险操作在浏览器确认后以 `confirm:true` 重试，生成/工作区代码仍通过主线程 handoff 执行。需要第二行输入或重启设备的 `/setup`、`/wifi`、`/model`、`/ca`、`/factory-reset`、`/web reset-password` 使用专用网页表单/按钮（`/repl` 仅串口；`/memory replace` 可用 `=>` 单行形式）。回退可通过 `/undo`/`/rewind` 或专用 `POST /api/rewind`。
 - Web CA 上传只接受包含 PEM 标记、路径为绝对 `.pem` 且不含 `..` 的内容，上限 64 KB。全量 Mozilla bundle 建议通过部署或串口安装。
 - Web 线程只处理 HTTP 和模型请求，不直接执行前台生成代码、不调用 `os.dupterm`、不复位设备、不直接喂看门狗；前台生成代码和工作区脚本通过主线程 handoff 执行。后台 worker 线程只运行经过相同确认规则的任务，使用线程级输出隔离，也不调用 `os.dupterm`/`machine.reset`/喂狗。执行器的协作式钩子只在主线程调用 `feed_execution()`；后台 worker 的喂狗调用是空操作。因此网页触发的可协作长前台程序可以安全超过 30 秒；不经过钩子的前台死循环仍会停止喂狗并复位，而后台任务完全阻塞时主线程仍喂狗，该任务通常只能靠重启恢复。共享执行运行时必须在最后一个执行结束/线程结束后恢复 `builtins.print`、`builtins.__harness_check` 和 `time` 模块。
 - 单 Web 线程意味着长对话期间其他网页请求排队；这不是并发隔离，不能用来承载多用户或公网访问。请求头和正文读取有 `web_request_timeout_s` 总超时，但长模型回合期间网络维护仍会延后。
@@ -74,7 +74,7 @@
 
 - Skill 是 Markdown 指令包，不是可执行代码；`__skill read` 只加载上下文，不执行任何内容。模型可在用户明确要求时通过 `__skill delete` 删除整个 `/skills/<name>/` 目录；没有回收站，删除不可恢复。
 - Harness 只提供内置工具（`__skill`、`__workspace`、`__memory`、`__search`、`__ask`、`__http`、`__background`），不再支持模型自定义可执行 Tool；不会从 `/tools` 加载任意代码。
-- 内置工具只访问 Skill 目录、Workspace、MEMORY.md 或内置搜索服务，不拥有任意文件或硬件访问能力；硬件访问只发生在生成代码通过全局 `api` 对象调用已配置外设时。`__ask` 只把模型生成的问题和选项写入对话历史并结束回合；问题文本会持久化到 `/state/conversation.json`，可能包含敏感信息，回答作为普通用户消息处理。
+- 内置工具只访问 Skill 目录、Workspace、MEMORY.md 或内置搜索服务，不拥有任意文件或硬件访问能力；硬件访问只发生在生成代码中，生成代码可直接 `import machine`/`neopixel` 等原生模块。`__ask` 只把模型生成的问题和选项写入对话历史并结束回合；问题文本会持久化到 `/state/conversation.json`，可能包含敏感信息，回答作为普通用户消息处理。
 - `__skill read` 会把 SKILL.md 返回给模型；这些内容可能包含提示注入。模型应把它们当作数据。
 - `/MEMORY.md` 始终加载，模型可通过 `__memory` 追加、删除或替换记忆且不需逐次确认；串口 `/memory delete` 和 `/memory clear` 有确认提示。不要把秘密写入 MEMORY.md。
 - `__search` 会把查询发送到配置的搜索后端：Anthropic/OpenAI/DeepSeek 的原生 Web 搜索服务，或 Bing。搜索内容、答案和引用文本都是不可信数据，可能包含提示注入，模型不应把其中的指令当作系统指令执行。
@@ -108,16 +108,15 @@
 - 不支持 OAuth 浏览器授权；不要把 OAuth 客户端密钥写进 `/mcp.json` 期望自动刷新。
 - `mcp_refresh_budget_s` 限制一次刷新总时长；单个服务器超时只影响该服务器，不会阻止普通对话。
 
-## 外设和固件边界
+## 原生硬件访问和固件边界
 
-- GPIO、I2C、SPI、UART、NeoPixel、ADC 默认关闭，必须通过 `/peripherals` 显式配置并启用。
-- GPIO 26–37 用于 Flash/Octal PSRAM；43/44 用于控制台 UART0；19/20 为原生 USB；0/3/45/46 为启动 strapping。这些引脚默认保留。
-- GPIO 每次使用都会重新检查当前允许列表；I2C/SPI/UART 和 NeoPixel 缓存会核对当前配置，撤销配置或修改参数后不会继续使用旧权限和旧总线。
-- 生成代码通过全局 `api` 对象访问硬件：`api.status()`/`api.available()`、`api.gpio`、`api.spi`、`api.i2c`、`api.uart`、`api.neopixel`、`api.adc`、`api.pwm`、`api.touch`、`api.rtc`、`api.pulse` 和只读的 `api.system`。这些方法仍检查 `peripherals_enabled`、保留引脚、`allowed_gpio_pins`、已配置总线和 `peripheral_max_transfer`；PWM/触摸使用各自的允许列表，RTC 写入默认关闭，脉冲测量要求引脚已设为输入。生成代码不得 `import machine` 或直接使用裸引脚。`import api` 为兼容旧代码返回同一对象。
-- 外设配置和 `/peripherals scan` 仍用于接线检查与配置校验；AI 不会自动修改外设配置，缺少总线或控制引脚时应让用户执行 `/peripherals` 并核对实际接线。
-- 板载 RGB LED 是 GPIO48 上的单颗 WS2812，可直接用 `/peripherals neopixel 48 1` 配置；外接灯带时注意 5 V 供电、电平和电流，不要由 GPIO 直接供电。
-- ADC 只接受 `adc_pins` 中登记的引脚，输入电压必须在 0–3.3 V 范围内；不要接入负电压或超过 3.3 V 的信号。
+- 生成代码直接运行在 MicroPython 上，可以 `import machine`、`neopixel`、`framebuf`、`esp`、`esp32` 等模块；没有全局 `api` 对象、引脚 allowlist 或 `/peripherals` 配置。确认机制只防止误执行，不是硬件沙箱。
+- GPIO 26–37 用于 Flash/Octal PSRAM；43/44 用于控制台 UART0；19/20 为原生 USB；0/3/45/46 为启动 strapping。除非明确知道后果，不要在这些引脚上接外设或输出信号；误用可能导致设备无法启动、文件系统损坏或需要重新刷机。
+- 生成代码可以构造 `Pin`/`SPI`/`I2C`/`UART`/`PWM`/`ADC`/`TouchPad`/`RTC`，也可以调用 `machine.reset()`、`machine.WDT` 等底层接口。这些能力不会被 Harness 拦截；请只运行经过审查的代码。
+- 板载 RGB LED 是 GPIO48 上的单颗 WS2812，可直接使用 `neopixel.NeoPixel(Pin(48), 1)`；外接灯带时注意 5 V 供电、电平和电流，不要由 GPIO 直接供电。
+- ADC 输入电压必须在 0–3.3 V 范围内；不要接入负电压或超过 3.3 V 的信号。
 - 接线前确认 3.3 V 电平、供电、上拉电阻和设备地址；错误接线或错误驱动可能损坏外设或开发板。
+- 多任务同时访问同一条 SPI/I2C 总线可能交错；不要同时驱动同一设备。
 - 部署脚本只复制/删除 VFS 文件，不调用 `esptool`，不擦除 Flash，不修改 Bootloader、分区表或 MicroPython 固件。
 
 固件更新是单独、显式的维护操作，必须使用正确的 `ESP32_GENERIC_S3-SPIRAM_OCT` 镜像。

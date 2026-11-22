@@ -8,6 +8,10 @@ from harness.config import Config, ConfigError
 
 
 class ConfigTests(unittest.TestCase):
+    def test_auto_feedback_default_turns(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.assertEqual(32, Config(root).get("max_turns"))
+
     def test_round_trip_and_secret_separation(self):
         with tempfile.TemporaryDirectory() as root:
             config = Config(root)
@@ -65,6 +69,23 @@ class ConfigTests(unittest.TestCase):
             self.assertNotIn(
                 "search_api_key", json.loads(secrets_path.read_text()))
             self.assertEqual("model-secret", config.secret("api_key"))
+
+    def test_removed_peripheral_settings_are_dropped_and_saved(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = pathlib.Path(root) / "config.json"
+            path.write_text(json.dumps({
+                "peripherals_enabled": True,
+                "allowed_gpio_pins": [4],
+                "spi_buses": [{"id": 1, "sck": 12, "mosi": 11}],
+                "peripheral_max_transfer": 4096,
+            }), encoding="utf-8")
+            config = Config(root)
+            for key in (
+                "peripherals_enabled", "allowed_gpio_pins", "spi_buses",
+                "peripheral_max_transfer",
+            ):
+                self.assertNotIn(key, config.values)
+                self.assertNotIn(key, json.loads(path.read_text()))
 
     def test_thinking_level_persists_and_retired_levels_migrate(self):
         with tempfile.TemporaryDirectory() as root:

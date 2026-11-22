@@ -1,6 +1,6 @@
 # 命令手册
 
-所有命令从 `/` 开始；其他输入会作为自然语言任务发送给本地 Agent。串口仍是完整控制面；网页提供白名单子集和专用 API。主机侧推荐用 `python tools/serial_console.py --port <PORT>` 连接；它是通用串口终端，按 UTF-8 字符边界限速发送，避免长中文输入被 UART RX 缓冲截断。Skill 名称只能包含字母、数字、下划线和连字符，最长 32 字符。
+所有命令从 `/` 开始；其他输入会作为自然语言任务发送给本地 Agent。串口仍是完整控制面；网页命令页接受除少数交互表单和重启类操作之外的命令，生成/工作区代码通过主线程 handoff 执行。主机侧推荐用 `python tools/serial_console.py --port <PORT>` 连接；它是通用串口终端，按 UTF-8 字符边界限速发送，避免长中文输入被 UART RX 缓冲截断。Skill 名称只能包含字母、数字、下划线和连字符，最长 32 字符。
 
 ## 初始化与状态
 
@@ -11,7 +11,7 @@
 | `/status` | 显示脱敏配置、内存、网络、历史、Skill、Memory 和工作区状态 |
 | `/repl` | 确认后复位到维护 REPL，停止 Agent 以便部署 |
 | `/wifi` | 重新配置并立即连接 Wi-Fi |
-| `/model` | 配置 API 协议（openai/anthropic）、Base URL、模型、API Key、CA 和 TLS 验证；全量 CA 已安装时直接保留 `/ca.pem`，通常无需自定义 |
+| `/model` | 配置 API 协议（openai/anthropic）、Base URL、模型、API Key、CA 和 TLS 验证；部署器会自动安装全量 CA，通常直接保留 `/ca.pem` 即可 |
 | `/thinking [level]` | 查看或设置 thinking：disable/low/high/max（默认 high，保存并跨重启） |
 | `/thinking show on\|off` | 显示或隐藏 reasoning 文本（默认显示） |
 | `/auto [on\|off]` | 自动运行生成代码并自动反馈 |
@@ -35,23 +35,20 @@ SSID: ESP32-Harness-XXXX
 URL:  http://192.168.4.1/
 ```
 
-网页登录后可对话、执行白名单命令、查看历史和修改 Wi-Fi/模型/API Key/CA/管理密码。网页与串口共享会话，模型回合互斥；网页触发的代码仍在串口主线程执行，串口只读命令在网页回合期间可用。网页 `/api/command` 只允许：
+网页登录后可对话、执行命令页 `/` 命令、查看历史和修改 Wi-Fi/模型/API Key/CA/管理密码。网页与串口共享会话，模型回合互斥；网页触发的代码仍在串口主线程执行，串口只读命令在网页回合期间可用。
 
-```text
-/help /status /history /context /summary /code /discard
-/undo /rewind
-/skills /skill-show
-/thinking（读或设置） /auto（仅读） /search /compact /clear
-/memory（仅无参数） /workspace（无参数/list/read/stat）
-/peripherals（无参数/scan）
-/background（无参数/list/status，仅读）
-```
+网页 `/api/command` 接受所有**非交互**命令，包括 `/status`、`/history`、`/context`、`/summary`、`/code`、`/discard`、`/undo`、`/rewind`、`/skills`、`/skill-show`、`/skill-delete`、`/thinking`、`/auto`、`/native`、`/search`、`/test`、`/compact`、`/clear`、`/memory`、`/workspace`（`run` 除外）、`/mcp`、`/http`、`/background`、`/bg` 和只读 `/web`。需要写文件或改变风险设置的命令会在网页弹出确认对话框；确认后重试执行。
 
-`/setup`、`/repl`、`/wifi`、`/model`、`/ca`、`/test`、`/run`、`/skill-delete`、`/memory delete|replace|clear`、`/workspace run|remove|clean|mkdir`、`/peripherals` 写配置、`/mcp` 写操作、`/background stop|note|discard`、`/factory-reset` 和 `/web reset-password` 必须使用串口或对应 Web API。后台任务的写操作使用网页任务卡片或 `POST /api/background/stop|discard`、`POST /api/continue`；MCP 的网页接口是 `GET/POST /api/mcp` 和 `POST /api/mcp/refresh`，不经过 `/api/command`。
+`/run`、`/run bg`、`/workspace run` 和 `/continue` 也可从网页命令页执行；生成/工作区代码通过主线程 handoff 运行，执行前浏览器会请求确认。以下命令仍需要第二次输入或重启设备，使用对应的专用表单/按钮（`/repl` 仅限串口）：
+
+- `/setup`、`/wifi`、`/model`、`/ca`、`/web reset-password`：使用设置页表单；
+- `/factory-reset`：使用网页恢复出厂设置表单，需要管理密码和 `confirm:true`。
+
+网页或单行场景使用 `/memory replace <match> => <replacement>`；只写 `/memory replace <match>` 时串口仍会提示第二行输入。
 
 `/factory-reset` 会删除 `config.json`、`secrets.json`、`mcp.json`、`MEMORY.md`、`recovery.json`/`recovery.py`、`/state`（持久对话）、`/skills`、旧版 `/tools`、`/workspace` 和 RAM 中的对话状态，然后重启；固件、`boot.py`、`main.py`、`harness/` 和公共 CA（`/ca.pem`）保留。Web 端对应 `POST /api/factory-reset`，需要当前管理密码和 `confirm:true`。
 
-`/code` 和 `/peripherals scan` 也会持有回合锁：`/code` 在串口可能进入 Skill 提案的保存或丢弃流程，`scan` 会执行真实 I2C 事务，因此它们不属于网页回合期间仍可使用的串口无锁只读命令。网页 `auto_run` 与串口 `/auto` 共用全局配置；开启需要二次确认。详见 [Web 控制台](web.md)。
+`/code` 也会持有回合锁：它在串口可能进入 Skill 提案的保存或丢弃流程，因此不属于网页回合期间仍可使用的串口无锁只读命令。网页 `auto_run` 与串口 `/auto` 共用全局配置；开启需要二次确认。详见 [Web 控制台](web.md)。
 
 ## 会话
 
@@ -77,7 +74,7 @@ URL:  http://192.168.4.1/
 | `/memory` | 显示始终加载的 `/MEMORY.md` |
 | `/memory append <text>` | 追加一行记忆 |
 | `/memory delete <text>` | 删除包含匹配文本的行（确认） |
-| `/memory replace <text>` | 替换唯一匹配的整行，随后提示输入新内容 |
+| `/memory replace <text> [=> <new>]` | 替换唯一匹配的整行；省略 `=> <new>` 时提示输入新内容 |
 | `/memory clear` | 恢复模板（确认） |
 
 `/MEMORY.md` 会在每次请求时自动加入系统提示词，适合代码约定、构建命令、引脚和长期偏好。模型也可以通过内置 `__memory` 工具读取、追加、删除或替换；`delete` 删除所有匹配行，`replace` 要求唯一匹配并重写整行。详见 [MEMORY.md](memory.md)。
@@ -230,39 +227,25 @@ AI 可通过内置 `__background` 工具管理多个任务：
 /auto on              # 自动运行代码并自动反馈
 /auto off
 /auto run on          # 只自动运行生成代码
-/auto turns 12        # 设置自动反馈最大轮数（1-50，默认 8）
+/auto turns 32        # 设置自动反馈最大轮数（1-50，默认 32）
 ```
 
-- `auto_run`：模型返回 python 代码块后立即本地执行并自动反馈；连续修复受 `max_turns` 限制（默认 8，可用 `/auto turns N` 或网页设置调整）。明显包含 `while True`/`while 1` 的代码会被阻止自动执行，需要人工 `/run`。
+- `auto_run`：模型返回 python 代码块后立即本地执行并自动反馈；连续修复受 `max_turns` 限制（默认 32，可用 `/auto turns N` 或网页设置调整）。明显包含 `while True`/`while 1` 的代码会被阻止自动执行，需要人工 `/run`。
 - Skill 保存仍然需要确认。
 - 复位恢复的待审代码不会在启动时自动运行。
 - 自动模式绕过逐次确认，适合可信的本地开发会话。网页对话框旁的 AUTO 控制 `auto_run`，开启需要确认；`auto_feedback` 和 `background_execution` 仍在网页设置页单独配置。
 - 后台执行与自动模式相互独立：它只改变执行等待方式，不改变确认/权限规则；AUTO 关闭时手动“前台运行/后台运行”仍可选择。AUTO 开启且 `auto_feedback=true` 时，新代码会创建后台任务，完成后由设备主线程自动继续，不需要网页或用户点击“继续/丢弃”。
 
-## 外设配置
+## 硬件访问
 
-外设默认关闭，且必须显式声明引脚：
+`/peripherals` 命令已移除，生成代码直接使用 MicroPython 原生外设库：
 
-```text
-/peripherals i2c 0 16 15 400000   # id sda scl [freq]
-/peripherals enable
-/peripherals scan 0
-/peripherals gpio 7,8,9,10
-/peripherals spi 1 12 11 - 20000000 hw  # no MISO; hw is the default
-/peripherals spi 1 12 11 13 1000000 sw  # explicit MISO + software SPI
-/peripherals transfer 4096
-/peripherals uart 1 17 18 115200
-/peripherals neopixel 48 1       # pin [count]
-/peripherals adc 4
-/peripherals pwm 13              # allow PWM output
-/peripherals touch 4             # allow capacitive touch
-/peripherals rtc write on|off    # allow api.rtc.set_datetime (default off)
-/peripherals remove i2c 0
-/peripherals clear
-/peripherals disable
+```python
+from machine import Pin, SPI, I2C, UART, PWM, ADC, TouchPad, RTC, time_pulse_us
+from neopixel import NeoPixel
 ```
 
-GPIO 26–37、43、44、19、20、0、3、45、46 默认保留。SPI 默认使用硬件 `machine.SPI`（`id` 为 1 或 2）；`sw` 回退到 `SoftSPI`，`hw` 模式下可用 `-` 省略只写设备的 MISO。NeoPixel 使用 `neopixel` 模块和 WS2812 时序，`count` 默认 1、最大 64；ADC 只接受已在 `adc_pins` 中登记的引脚；PWM 只接受 `pwm_pins`，触摸只接受 `touch_pins` 中的 GPIO1–GPIO14；RTC 写入默认关闭。生成代码通过受控的全局 `api` 访问已配置硬件（含 `api.pwm/touch/rtc/system/pulse`），不能用自定义 Tool 或直接 `machine` 绕过 `/peripherals`；`scan` 用于接线检查。详见 [硬件 API](hardware.md) 与 [安全、恢复与限制](safety.md)。
+GPIO 26–37（Flash/PSRAM）、43/44（控制台 UART）、19/20（原生 USB）和 0/3/45/46（strapping）应避开，除非明确知道后果。SPI 硬件总线 `id` 为 1 或 2，写入型设备可把 `miso` 设为 `None`；需要任意引脚时使用 `SoftSPI`。I2C、UART、PWM、ADC、触摸和 RTC 均使用标准 MicroPython 类。详见 [生成代码的硬件访问](hardware.md) 与 [安全、恢复与限制](safety.md)。
 
 ## Workspace
 

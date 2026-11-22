@@ -98,23 +98,12 @@ DEFAULTS = {
     "mcp_tool_limit": 32,
     "mcp_max_servers": 8,
     "mcp_timeout_s": 60,
-    "peripherals_enabled": False,
-    "allowed_gpio_pins": [],
-    "i2c_buses": [],
-    "spi_buses": [],
-    "uart_buses": [],
-    "neopixel_strips": [],
-    "adc_pins": [],
-    "pwm_pins": [],
-    "touch_pins": [],
-    "rtc_write": False,
-    "peripheral_max_transfer": 256,
     "input_limit": 2000,
     "code_limit": 12288,
     "output_limit": 4096,
     "code_timeout_s": 20,
     "code_timeout_max_s": 300,
-    "max_turns": 8,
+    "max_turns": 32,
     "request_timeout": 120,
     "wifi_timeout": 25,
     "watchdog_ms": 30000,
@@ -258,18 +247,28 @@ class Config:
         # keep advertising them in /status. The standalone DeepSeek Search API
         # and its dedicated key were removed; AUTO now uses provider-native
         # search or keyless Bing.
-        legacy_search = False
+        legacy_config = False
         for key in ("auto_save_tools", "tools_in_prompt",
                     "tool_data_file_limit", "tool_data_total_limit",
                     "tool_data_files", "search_url", "search_content_limit",
                     "search_include_content"):
             if self.values.pop(key, None) is not None and key.startswith(
                     "search_"):
-                legacy_search = True
+                legacy_config = True
+        # The /peripherals allowlist was removed. Generated code now uses
+        # MicroPython's machine/neopixel modules directly; drop the old keys
+        # so they do not linger in config.json or /status.
+        for key in (
+            "peripherals_enabled", "allowed_gpio_pins", "i2c_buses",
+            "spi_buses", "uart_buses", "neopixel_strips", "adc_pins",
+            "pwm_pins", "touch_pins", "rtc_write", "peripheral_max_transfer",
+        ):
+            if self.values.pop(key, None) is not None:
+                legacy_config = True
         if str(self.values.get("search_provider", "auto")).lower() not in (
                 "auto", "bing"):
             self.values["search_provider"] = "auto"
-            legacy_search = True
+            legacy_config = True
         # thinking_level is a user preference that survives reboots. Migrate
         # retired levels (default/medium) to the current four-level set on
         # load so /status, the web UI and the next request agree.
@@ -291,8 +290,8 @@ class Config:
         # The old DeepSeek Search key has no consumer anymore. Remove it from
         # memory and rewrite the files once so it does not linger on disk.
         if self.secrets.pop("search_api_key", None) is not None:
-            legacy_search = True
-        if legacy_search:
+            legacy_config = True
+        if legacy_config:
             try:
                 self.save()
                 self.save_secrets()

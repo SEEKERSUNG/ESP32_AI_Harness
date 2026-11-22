@@ -1,6 +1,6 @@
 # Web 控制台与 AP 配网
 
-设备内置一个可选的 HTTP 控制台：浏览器访问 ESP32 的局域网 IP 和端口（默认 `80`），登录后可以对话、执行白名单 `/` 命令、查看历史和修改 Wi-Fi、模型、CA、管理密码等配置。串口控制台的完整能力保持不变。
+设备内置一个可选的 HTTP 控制台：浏览器访问 ESP32 的局域网 IP 和端口（默认 `80`），登录后可以对话、执行命令页 `/` 命令、查看历史和修改 Wi-Fi、模型、CA、管理密码等配置。串口控制台的完整能力保持不变。
 
 网页在独立后台线程运行；前台生成代码和工作区脚本回到串口主线程，后台任务在各自 worker 线程并发执行。网页和串口共享同一份 Agent、历史、配置和待处理项，同一时间只允许一个模型回合或变更型操作。
 
@@ -41,21 +41,11 @@ AP 是 WPA2。首次设置只接受来自 AP 网段的客户端（可用 `web_se
 
 `/web reset-password` 是找回管理密码的方式；物理串口是信任边界。也可运行 `/setup`，在末尾设置网页管理密码。
 
-网页通过 `POST /api/command` 只能执行白名单命令：
+网页 `POST /api/command` 接受状态/历史、搜索/HTTP、Memory/Skill 写入、Workspace 写入、MCP、后台任务控制、只读 `/web`、`/run`、`/run bg`、`/workspace run` 和 `/continue`。需要确认的命令会在浏览器弹出确认框，并以 `confirm:true` 重试；`/auto on`、`/mcp auto <server> on` 也走同一确认流程。
 
-```text
-/help /status /history /context /summary /code /discard
-/undo /rewind
-/skills /skill-show
-/thinking（读或设置） /auto（仅读） /search /compact /clear
-/memory（仅无参数） /workspace（无参数/list/read/stat）
-/peripherals（无参数/scan）
-/background（无参数/list/status，仅读）
-```
+`/run`、`/run bg`、`/workspace run` 和 `/continue` 可从命令页执行，生成/工作区代码通过主线程 handoff 运行，并在浏览器确认后继续。需要第二次输入或重启设备的命令仍使用专用网页入口：`/setup`、`/wifi`、`/model`、`/ca`、`/web reset-password` 使用设置页；`/factory-reset` 使用恢复出厂设置表单；`/repl` 仅串口可用。`/memory replace <match> => <replacement>` 可在命令页直接执行。`/peripherals` 已移除，生成代码直接使用 MicroPython 原生外设库。
 
-交互式命令（例如需要串口确认的 `/setup`、`/repl`、`/wifi`、`/model`、`/ca`、`/test`、`/run`）会被拒绝并提示使用串口或对应的 Web API。后台任务的 `stop`/`note`/`discard` 不在网页命令白名单中，请使用任务卡片按钮、`POST /api/background/stop|discard` 或串口 `/background`。
-
-`/code` 和 `/peripherals scan` 虽在网页白名单中，也属于独占操作：前者在串口可能进入提案保存/丢弃流程，后者会执行真实 I2C 事务。网页回合期间，串口不能把这两条命令当作无锁只读命令使用。
+`/code` 仍属于独占操作：它在串口可能进入提案保存/丢弃流程。网页回合期间，串口不能把 `/code` 当作无锁只读命令使用。
 
 ## 网页能力
 
@@ -67,10 +57,10 @@ AP 是 WPA2。首次设置只接受来自 AP 网段的客户端（可用 `web_se
 - 布局：对话/命令导航栏固定在页面底部，Thinking/AUTO 位于对话框旁，窄屏自动换行；输入框位于导航栏上方，长对话不会把导航栏挤出视野。切换到命令页再返回对话页时，页面会自动滚动到最新消息；新内容到达时仅在用户接近底部时跟随，避免打断向上翻阅历史。
 - 代码确认：默认显示“运行/丢弃”；`auto_run=true` 时安全代码自动执行并自动反馈。
 - Skill：显示提案卡，可保存或丢弃；Skill 永不自动保存。
-- 命令页：白名单 `/` 命令和输出，交互式命令会提示回串口。
+- 命令页：非交互 `/` 命令和输出；需要确认的命令会弹出确认框，交互式命令会提示使用对应表单或串口。
 - 设置：Wi-Fi、API 协议（OpenAI 兼容/Anthropic）、Base URL、Model、API Key、TLS 验证、CA 路径、CA PEM、MCP 服务器 JSON、网页搜索（启用、provider auto/bing、实际生效提供方）、公共 HTTP 抓取（`__http` 启用、明文 HTTP 开关）、管理密码、AP 密码、思考文本显示、自动反馈、对话持久化、清空/压缩上下文、测试 Wi-Fi/API，以及恢复出厂设置。Thinking 强度和 AUTO 不再重复放在设置页，而是在对话框旁直接操作。
 - 恢复出厂设置：需勾选确认并再次输入当前管理密码；删除 `config.json`、`secrets.json`、`mcp.json`、`MEMORY.md`、待恢复代码、Skill、旧版 Tool 目录、工作区、`/state` 持久对话和 RAM 中的对话状态后重启。固件、启动文件和公共 CA 保留；Wi-Fi 配置清除后会回到设备 AP 首次设置流程。
-- CA 配置：页面明确提示“不想自定义时保持原样即可”。已检测到 CA 文件时，路径和 PEM 上传默认收在“高级：自定义 CA”折叠区；全量 bundle 已部署到 `/ca.pem` 时无需替换。检测不到 CA 文件时自动展开并提示安装。折叠只简化界面，不会关闭 `tls_verify`。
+- CA 配置：页面明确提示“不想自定义时保持原样即可”。已检测到 CA 文件时，路径和 PEM 上传默认收在“高级：自定义 CA”折叠区；部署器会自动把全量 bundle 安装到 `/ca.pem`，通常无需替换。检测不到 CA 文件时自动展开并提示安装。折叠只简化界面，不会关闭 `tls_verify`。
 - 状态：STA/AP 模式、IP、AP 宽限倒计时、Wi-Fi 错误、堆、历史/上下文、待处理项、待回答问题、会话数。状态接口使用一次性 pending 快照，串口同时运行或丢弃提案不会把正常轮询变成 500。
 - 历史：`/api/history` 优先保留最新消息，再按时间正序返回；字符预算不足时省略较早消息，而不是先丢掉当前对话尾部。
 - 页面每 5 秒轮询状态（空闲且页面可见时）；流式请求期间暂停轮询。
@@ -84,7 +74,7 @@ AP 是 WPA2。首次设置只接受来自 AP 网段的客户端（可用 `web_se
 
 - `auto_run=false`（默认）：显示代码，用户点击“运行”后才执行。
 - `auto_run=true`：模型返回的安全代码自动执行；明显包含 `while True`/`while 1` 的代码仍会被阻止，需要手动运行。
-- `auto_feedback=true`（默认）：执行结果自动反馈给模型，受 `max_turns` 限制；设置页可调整最大轮数（默认 8，范围 1–50）。
+- `auto_feedback=true`（默认）：执行结果自动反馈给模型，受 `max_turns` 限制；设置页可调整最大轮数（默认 32，范围 1–50）。
 - 开启自动模式需要浏览器确认和 `/api/auto` 的 `confirm:true`；页面显示红色 AUTO 标记。聊天区 AUTO 控制 `auto_run`；`auto_feedback` 和 `background_execution` 保留在设置页，不会被该开关意外重置。
 - `background_execution=true`（默认）：AUTO 或手动“后台运行”创建后台任务，每个任务在自己的 worker 线程执行；`/api/chat`/`/api/run` 的流立即结束。浏览器轮询 `/api/status.backgrounds`，按任务显示编号、备注、状态、耗时和输出。AUTO 模式且 `auto_feedback=true` 时，设备主线程在 `esp32>` 空闲时自动提交已完成结果并继续模型对话，网页不显示“继续/丢弃”选项；浏览器标签页关闭或隐藏也不影响。打开的网页会在自动继续期间轮询 `GET /api/live`，把 `content`/`reasoning` 增量追加到聊天气泡，因此回复像普通流式回合一样逐步出现；设备只保留一段有界快照（默认上限 `web_output_limit`），完成后网页刷新 `/api/history` 并以持久历史为准。自动继续不会为 Skill 提案或需要确认的 MCP 工具弹出阻塞式串口确认：Skill 提案保持待处理，非 `auto` 服务器的 MCP 工具调用被拒绝。被用户取消/停止的任务不会被自动重启；模型应报告停止结果，只有用户再次要求时才重新启动。手动模式（AUTO 关闭）仍由网页或 `/api/continue {"id":N}` 继续。最多同时运行 `background_max_jobs` 个（默认 4，设置页可改 1–4），多余任务显示“排队中”。执行期间可以继续发送新网页对话、手动前台运行另一段代码，或再创建后台任务；新的待执行卡片有“前台运行/后台运行”两个按钮。配置、回退、`/clear`、`/repl`、恢复出厂设置等维护操作仍返回 409。可以用每个任务的停止按钮或 AI 的 `__background stop` 请求停止；`timeout=0`/`infinite` 可让后台任务无截止时间运行，但停止仍依赖协作检查点。后台输出通过 `print()` 捕获，直接写 `sys.stdout` 可能丢失。结果观察会标注原任务和其他仍在运行的任务；若其间存在待执行代码、Skill 或问题，自动继续会等待这些项处理完毕。串口可用 `/run bg`、`/background`、`/continue [id]` 手动进入同一流程。
 
@@ -156,7 +146,7 @@ POST /api/factory-reset {confirm:true,password} 删除用户数据并重启
 错误统一为：
 
 ```json
-{"ok":false,"error":"...","code":"busy|pending|background|auth|rate_limited|invalid|timeout|internal"}
+{"ok":false,"error":"...","code":"busy|pending|background|auth|rate_limited|invalid|confirm|interactive|timeout|internal"}
 ```
 
 ### NDJSON 事件

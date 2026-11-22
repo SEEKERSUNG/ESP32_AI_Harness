@@ -24,13 +24,6 @@ from .conversation import BackgroundStore, ConversationStore
 from .device import Board, Network
 from .executor import ExecutionResult, Executor
 from .http_client import HttpClient
-from .hardware import (
-    HardwareAPI,
-    HardwareManager,
-    PeripheralError,
-    TOUCH_PINS,
-    validate_pin,
-)
 from .llm import (
     LLMStreamCancelled,
     create_llm,
@@ -57,7 +50,7 @@ HELP = """Commands:
   /wifi                 Configure and test Wi-Fi
   /model                Configure OpenAI-compatible or Anthropic API
   /thinking [level]     Show/set thinking: disable, low, high, max (saved)
-  /thinking show on|off Show/hide reasoning text (default: off)
+  /thinking show on|off Show/hide reasoning text (default: on)
   /auto [on|off]        Auto-run generated code and auto-feedback
   /auto turns N         Set maximum automatic feedback turns (1-50)
   /native [on|off]      Show/configure native function calling
@@ -74,7 +67,7 @@ HELP = """Commands:
   /memory               Show always-loaded MEMORY.md
   /memory append <text> Append a line to MEMORY.md
   /memory delete <text> Delete matching MEMORY.md lines (confirm)
-  /memory replace <text> Replace one matching MEMORY.md line
+  /memory replace <text> [=> <new>] Replace one matching MEMORY.md line
   /memory clear         Reset MEMORY.md after confirmation
   /search <query>       Search the web (auto/bing provider)
   /search provider ...  Set search provider: auto or bing
@@ -96,13 +89,6 @@ HELP = """Commands:
   /skills               List saved skill packages
   /skill-show <name>    Show a skill's SKILL.md
   /skill-delete <name>  Delete a skill package after confirmation
-  /peripherals          Show/configure GPIO, I2C, SPI, UART, NeoPixel, ADC, PWM, touch and RTC
-  /peripherals spi 1 12 11 - 20000000 hw  Hardware SPI, no MISO pin
-  /peripherals pwm 13   Allow PWM on GPIO13
-  /peripherals touch 4  Allow capacitive touch on GPIO4
-  /peripherals rtc write on  Allow api.rtc.set_datetime
-  /peripherals transfer 4096  Raise the single-transfer byte limit
-  /peripherals scan 0   Scan an I2C bus for device addresses
   /workspace            Show workspace and tmp contents
   /workspace list [path] List workspace files
   /workspace read <path> Show a workspace file
@@ -394,8 +380,6 @@ def command_is_exclusive(line):
         return bool(args)
     if command == "/workspace":
         return bool(args) and args[0].lower() not in ("list", "read", "stat")
-    if command == "/peripherals":
-        return bool(args)
     if command == "/web":
         return bool(args)
     if command == "/mcp":
@@ -546,21 +530,15 @@ class Application:
         self.skills = SkillStore(root)
         self.workspace = Workspace(root, self.config)
         self.memory = MemoryStore(root, self.config)
-        self.hardware = HardwareManager(self.config)
         self.migrated = migrate_legacy_skills(root, self.skills)
         self.recovery = Recovery(root)
         self.conversation = ConversationStore(root, self.config)
         self.mcp_store = MCPStore(root, self.config)
         self.mcp = MCPManager(self.config, self.http, self.mcp_store)
         self.mcp.on_confirm = self.confirm_mcp_call
-        self.hardware_api = HardwareAPI(self.hardware)
-        # Keep ``import api`` working for code written against the earlier
-        # capability wording, while generated code normally uses the injected
-        # global object without importing anything.
+        # ``device`` is injected as a global; keep an import alias too so
+        # generated code that writes ``import device`` still works.
         try:
-            sys.modules["api"] = self.hardware_api
-            # ``device`` is injected as a global; keep an import alias too so
-            # generated code that writes ``import device`` still works.
             sys.modules["device"] = self.board
         except Exception:
             pass
@@ -571,7 +549,6 @@ class Application:
             timeout_s=self.config.get("code_timeout_s", 20),
             max_timeout_s=self.config.get("code_timeout_max_s", 300),
             feed=self.feed_execution,
-            api=self.hardware_api,
         )
         self.executor.main_runner = self
         self.backgrounds = BackgroundPool(
@@ -866,7 +843,6 @@ class Application:
             feed=self.feed_execution,
             cancel_check=lambda: bool(job.get("stop_requested")),
             isolated_output=True,
-            api=self.hardware_api,
         )
         return executor.execute(
             job["source"], timeout_s=job.get("timeout"))
@@ -1385,8 +1361,6 @@ class Application:
             self.show_skill(self.require_name(args))
         elif command == "/skill-delete":
             self.delete_skill(self.require_name(args))
-        elif command == "/peripherals":
-            self.configure_peripherals(args)
         elif command == "/workspace":
             self.workspace_command(args)
         elif command == "/web":
@@ -2227,7 +2201,7 @@ class Application:
     def show_auto(self, run):
         self.ui.line("Auto mode: %s" % ("on" if run else "off"))
         self.ui.line("  auto-run generated code: %s" % ("on" if run else "off"))
-        self.ui.line("  max automatic feedback turns: %s" % self.config.get("max_turns", 8))
+        self.ui.line("  max automatic feedback turns: %s" % self.config.get("max_turns", 32))
 
     def show_workspace_summary(self):
         summary = self.workspace.summary()
@@ -2793,20 +2767,6 @@ class Application:
         self.ui.line("Persistent context: %s; %s saved message(s) at %s" % (
             "on" if persistence["enabled"] else "off",
             persistence["messages"], persistence["path"]))
-        status = self.hardware.status()
-        self.ui.line("Peripherals: %s; GPIO pins=%s; I2C=%s; SPI=%s; UART=%s; "
-                     "NeoPixel=%s; ADC=%s; PWM=%s; touch=%s; RTC write=%s" % (
-            "enabled" if status["enabled"] else "disabled",
-            status["allowed_gpio_pins"],
-            len(status["i2c_buses"]),
-            len(status["spi_buses"]),
-            len(status["uart_buses"]),
-            len(status["neopixel_strips"]),
-            len(status["adc_pins"]),
-            len(status["pwm_pins"]),
-            len(status["touch_pins"]),
-            "on" if status["rtc_write"] else "off",
-        ))
         self.ui.line("Auto mode: code=%s" % (
             self.config.get("auto_run", False),
         ))
@@ -2951,281 +2911,6 @@ class Application:
         if result.error:
             self.ui.line(result.error)
 
-    def configure_peripherals(self, args):
-        if not args:
-            self.show_peripherals()
-            return
-        action = args[0].lower()
-        if action in ("enable", "disable"):
-            self.config.set("peripherals_enabled", action == "enable")
-            self.ui.line("Peripherals %s." % ("enabled" if action == "enable" else "disabled"))
-            self.show_peripherals()
-            return
-        if action == "gpio":
-            values = " ".join(args[1:]).split(",")
-            pins = []
-            for value in values:
-                value = value.strip()
-                if not value:
-                    continue
-                try:
-                    pin = validate_pin(int(value))
-                except PeripheralError as exc:
-                    raise ValueError(str(exc))
-                if pin not in pins:
-                    pins.append(pin)
-            self._save_peripheral_list("allowed_gpio_pins", pins)
-            self.ui.line("Allowed GPIO pins: %s" % pins)
-            self.show_peripherals()
-            return
-        if action in ("i2c", "spi", "uart"):
-            self._configure_bus(action, args[1:])
-            return
-        if action == "transfer":
-            if len(args) != 2:
-                raise ValueError("Usage: /peripherals transfer <bytes>")
-            value = int(args[1])
-            if value < 1 or value > 4096:
-                raise ValueError("Transfer limit must be between 1 and 4096")
-            self.config.set("peripheral_max_transfer", value)
-            self.ui.line("Peripheral transfer limit: %s bytes." % value)
-            self.show_peripherals()
-            return
-        if action == "neopixel":
-            self._configure_neopixel(args[1:])
-            return
-        if action == "adc":
-            self._configure_adc(args[1:])
-            return
-        if action == "pwm":
-            if len(args) != 2:
-                raise ValueError("Usage: /peripherals pwm <pin>")
-            pin = validate_pin(int(args[1]))
-            current = [int(value) for value in self.config.get("pwm_pins", [])]
-            if pin not in current:
-                current.append(pin)
-            self._save_peripheral_list("pwm_pins", current)
-            self.ui.line("PWM enabled on GPIO%s." % pin)
-            self.show_peripherals()
-            return
-        if action == "touch":
-            if len(args) != 2:
-                raise ValueError("Usage: /peripherals touch <pin>")
-            pin = validate_pin(int(args[1]))
-            if pin not in TOUCH_PINS:
-                raise ValueError(
-                    "GPIO%s is not a touch-capable pin (GPIO1-GPIO14)" % pin
-                )
-            current = [int(value) for value in self.config.get("touch_pins", [])]
-            if pin not in current:
-                current.append(pin)
-            self._save_peripheral_list("touch_pins", current)
-            self.ui.line("Touch enabled on GPIO%s." % pin)
-            self.show_peripherals()
-            return
-        if action == "rtc":
-            if (len(args) != 3 or args[1].lower() != "write"
-                    or args[2].lower() not in ("on", "off")):
-                raise ValueError("Usage: /peripherals rtc write on|off")
-            enabled = args[2].lower() == "on"
-            self.config.set("rtc_write", enabled)
-            self.ui.line("RTC writes %s." % ("enabled" if enabled else "disabled"))
-            self.show_peripherals()
-            return
-        if action == "remove":
-            if len(args) != 3 or args[1] not in (
-                "i2c", "spi", "uart", "neopixel", "adc", "pwm", "touch"
-            ):
-                raise ValueError(
-                    "Usage: /peripherals remove "
-                    "<i2c|spi|uart|neopixel|adc|pwm|touch> <id>"
-                )
-            kind = args[1]
-            value = int(args[2])
-            if kind in ("i2c", "spi", "uart"):
-                key = kind + "_buses"
-                current = list(self.config.get(key, []))
-                self._save_peripheral_list(
-                    key,
-                    [item for item in current if int(item.get("id", -1)) != value],
-                )
-            elif kind == "neopixel":
-                current = list(self.config.get("neopixel_strips", []))
-                self._save_peripheral_list(
-                    "neopixel_strips",
-                    [item for item in current if int(item.get("pin", -1)) != value],
-                )
-            elif kind in ("pwm", "touch"):
-                key = kind + "_pins"
-                current = list(self.config.get(key, []))
-                self._save_peripheral_list(
-                    key,
-                    [item for item in current if int(item) != value],
-                )
-            else:
-                current = list(self.config.get("adc_pins", []))
-                self._save_peripheral_list(
-                    "adc_pins",
-                    [item for item in current if int(item) != value],
-                )
-            self.ui.line("Removed %s %s." % (kind, value))
-            self.show_peripherals()
-            return
-        if action == "scan":
-            if len(args) != 2:
-                raise ValueError("Usage: /peripherals scan <i2c-id>")
-            addresses = self.hardware.i2c_scan(int(args[1]))
-            self.ui.line("I2C bus %s devices: %s" % (args[1], addresses))
-            return
-        if action == "clear":
-            self.config.set("peripherals_enabled", False, save=False)
-            self.config.set("allowed_gpio_pins", [], save=False)
-            self.config.set("i2c_buses", [], save=False)
-            self.config.set("spi_buses", [], save=False)
-            self.config.set("uart_buses", [], save=False)
-            self.config.set("neopixel_strips", [], save=False)
-            self.config.set("adc_pins", [], save=False)
-            self.config.set("pwm_pins", [], save=False)
-            self.config.set("touch_pins", [], save=False)
-            self.config.set("rtc_write", False, save=False)
-            self.config.save()
-            self.ui.line("Peripheral configuration cleared and disabled.")
-            self.show_peripherals()
-            return
-        raise ValueError(
-            "Usage: /peripherals [enable|disable|clear|gpio <pins>|scan <i2c-id>|"
-            "i2c <id> <sda> <scl> [freq]|spi <id> <sck> <mosi> <miso|-> "
-            "[freq] [hw|sw]|uart <id> <tx> <rx> [baud]|neopixel <pin> "
-            "[count]|adc <pin>|pwm <pin>|touch <pin>|rtc write on|off|"
-            "transfer <bytes>|remove <type> <id>]"
-        )
-
-    def _configure_bus(self, kind, args):
-        if kind == "i2c":
-            if len(args) not in (3, 4):
-                raise ValueError("Usage: /peripherals i2c <id> <sda> <scl> [freq]")
-            bus_id, sda, scl = int(args[0]), validate_pin(int(args[1])), validate_pin(int(args[2]))
-            freq = int(args[3]) if len(args) == 4 else 400000
-            item = {"id": bus_id, "sda": sda, "scl": scl, "freq": freq}
-        elif kind == "spi":
-            if len(args) not in (4, 5, 6):
-                raise ValueError(
-                    "Usage: /peripherals spi <id> <sck> <mosi> <miso|-> "
-                    "[freq] [hw|sw]"
-                )
-            bus_id = int(args[0])
-            sck, mosi = validate_pin(int(args[1])), validate_pin(int(args[2]))
-            if args[3].lower() in ("-", "none", "off", "no"):
-                miso = None
-            else:
-                miso = validate_pin(int(args[3]))
-            freq = int(args[4]) if len(args) >= 5 else 1000000
-            mode = args[5].lower() if len(args) == 6 else "hw"
-            if mode not in ("hw", "sw"):
-                raise ValueError("SPI mode must be hw or sw")
-            item = {
-                "id": bus_id,
-                "sck": sck,
-                "mosi": mosi,
-                "freq": freq,
-                "mode": mode,
-            }
-            if miso is not None:
-                item["miso"] = miso
-        else:
-            if len(args) not in (3, 4):
-                raise ValueError("Usage: /peripherals uart <id> <tx> <rx> [baud]")
-            bus_id = int(args[0])
-            if bus_id not in (1, 2):
-                raise ValueError("UART id must be 1 or 2; UART0 is reserved")
-            tx, rx = validate_pin(int(args[1])), validate_pin(int(args[2]))
-            baud = int(args[3]) if len(args) == 4 else 115200
-            item = {"id": bus_id, "tx": tx, "rx": rx, "baud": baud}
-        key = kind + "_buses"
-        current = list(self.config.get(key, []))
-        updated = []
-        found = False
-        for existing in current:
-            if int(existing.get("id", -1)) == bus_id:
-                updated.append(item)
-                found = True
-            else:
-                updated.append(existing)
-        if not found:
-            updated.append(item)
-        self._save_peripheral_list(key, updated)
-        self.ui.line("Configured %s bus %s." % (kind, bus_id))
-        self.show_peripherals()
-
-    def _configure_neopixel(self, args):
-        if len(args) not in (1, 2):
-            raise ValueError("Usage: /peripherals neopixel <pin> [count]")
-        pin = validate_pin(int(args[0]))
-        count = int(args[1]) if len(args) == 2 else 1
-        if count < 1 or count > 64:
-            raise ValueError("NeoPixel count must be between 1 and 64")
-        item = {"pin": pin, "count": count}
-        current = list(self.config.get("neopixel_strips", []))
-        updated = []
-        found = False
-        for existing in current:
-            if int(existing.get("pin", -1)) == pin:
-                updated.append(item)
-                found = True
-            else:
-                updated.append(existing)
-        if not found:
-            updated.append(item)
-        self._save_peripheral_list("neopixel_strips", updated)
-        self.ui.line(
-            "Configured NeoPixel strip on GPIO%s with %s pixel(s)." % (pin, count)
-        )
-        self.show_peripherals()
-
-    def _configure_adc(self, args):
-        if len(args) != 1:
-            raise ValueError("Usage: /peripherals adc <pin>")
-        pin = validate_pin(int(args[0]))
-        current = list(self.config.get("adc_pins", []))
-        if pin not in [int(value) for value in current]:
-            current.append(pin)
-        self._save_peripheral_list("adc_pins", current)
-        self.ui.line("Configured ADC on GPIO%s." % pin)
-        self.show_peripherals()
-
-    def _save_peripheral_list(self, key, value):
-        previous = self.config.get(key)
-        self.config.set(key, value, save=False)
-        errors = self.hardware.validate_config()
-        if errors:
-            self.config.set(key, previous, save=False)
-            raise ValueError("; ".join(errors))
-        self.config.save()
-
-    def show_peripherals(self):
-        status = self.hardware.status()
-        self.ui.line("Peripherals: %s" % ("enabled" if status["enabled"] else "disabled"))
-        self.ui.line("Allowed GPIO pins: %s" % status["allowed_gpio_pins"])
-        self.ui.line("I2C buses: %s" % status["i2c_buses"])
-        self.ui.line("SPI buses: %s" % status["spi_buses"])
-        self.ui.line("UART buses: %s" % status["uart_buses"])
-        self.ui.line("NeoPixel strips: %s" % status["neopixel_strips"])
-        self.ui.line("ADC pins: %s" % status["adc_pins"])
-        self.ui.line("PWM pins: %s" % status["pwm_pins"])
-        self.ui.line("Touch pins: %s" % status["touch_pins"])
-        self.ui.line("RTC writes: %s" % (
-            "enabled" if status["rtc_write"] else "disabled"))
-        errors = self.hardware.validate_config()
-        if errors:
-            self.ui.line("Configuration errors: %s" % "; ".join(errors))
-        self.ui.line(
-            "Usage: /peripherals enable|disable|clear|gpio <pins>|scan <i2c-id>|"
-            "i2c <id> <sda> <scl> [freq]|spi <id> <sck> <mosi> <miso|-> "
-            "[freq] [hw|sw]|uart <id> <tx> <rx> [baud]|neopixel <pin> "
-            "[count]|adc <pin>|pwm <pin>|touch <pin>|rtc write on|off|"
-            "transfer <bytes>|remove <type> <id>"
-        )
-
     def list_skills(self):
         skills = self.skills.list()
         if not skills:
@@ -3287,7 +2972,18 @@ class Application:
                 result["removed"], result["total"]))
             return
         if action == "replace":
-            match = " ".join(args[1:]).strip()
+            raw = " ".join(args[1:]).strip()
+            replacement = ""
+            if "=>" in raw:
+                match, replacement = [
+                    part.strip() for part in raw.split("=>", 1)
+                ]
+                if not match or not replacement:
+                    raise ValueError(
+                        "Usage: /memory replace <match> => <replacement>"
+                    )
+            else:
+                match = raw
             if not match:
                 raise ValueError("Usage: /memory replace <text>")
             matches = self.memory.matching(match)
@@ -3301,7 +2997,8 @@ class Application:
                 )
                 return
             self.ui.line("Current line: %s" % matches[0])
-            replacement = self.ui.readline("New memory line: ")
+            if not replacement:
+                replacement = self.ui.readline("New memory line: ")
             if not replacement.strip():
                 self.ui.line("Replacement cancelled.")
                 return

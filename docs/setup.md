@@ -82,6 +82,8 @@ CONSOLE_SMOKE_OK
 
 设备烟雾测试还覆盖 Web 认证、localhost HTTP、静态资源、`_thread` 32 KB 栈和 `os.dupterm` 主线程 handoff。
 
+部署器会把 `certs/ca-bundle.pem` 复制为设备 `/ca.pem`：完整部署、`--clean` 和首次增量部署都会复制，`--changed` 只在 bundle 内容变化时更新。
+
 中文输入测试：
 
 ```powershell
@@ -94,7 +96,7 @@ python tools/input_smoke.py --port <PORT>
 python tools/maintenance_smoke.py --port <PORT>
 ```
 
-普通增量升级不要使用 `--clean`，否则会删除设备配置、CA 和技能：
+普通增量升级不要使用 `--clean`，否则会删除设备配置和技能（`/ca.pem` 会由部署器重新复制）：
 
 ```powershell
 python tools/deploy.py --port <PORT>
@@ -127,32 +129,20 @@ python tools/serial_console.py --port <PORT>
 - Wi-Fi 密码：空输入保留旧值，`-` 清除；
 - API Key：空输入保留旧值，`-` 清除；
 - Base URL：不要附加 `/chat/completions`；
-- CA 路径：默认 `/ca.pem`；全量 bundle 已安装时直接回车保留，通常无需自定义；
+- CA 路径：默认 `/ca.pem`；部署器会自动安装全量 bundle，直接回车保留即可；
 - TLS 验证：建议保持开启。
 
-项目包含：
+`python tools/deploy.py` 会自动把 `certs/ca-bundle.pem`（Mozilla 全量公共根证书）复制到设备 `/ca.pem`：完整部署、`--clean` 和首次增量部署都会复制，`--changed` 只在 bundle 内容变化时更新。因此通常不需要手动安装，也不需要为了更换 API 地址重新配置 CA。完整部署会用公共 bundle 覆盖 `/ca.pem`；使用私有 CA 时，请在部署后重新安装。
 
-```text
-certs/ca-bundle.pem                 # Mozilla 全量公共根证书
-certs/digicert-global-root-g2.pem   # 最小 DigiCert 根证书
-```
-
-推荐使用全量 bundle，换 API 地址或访问其他公共 HTTPS 服务时不需要重新配置：
+只有私有 CA、企业内网、自建 API 或手动恢复时才需要替换：
 
 ```powershell
-mpremote connect <PORT> repl
-# 在控制台执行 /repl，进入维护模式
+python tools/force_raw.py --port <PORT>
 mpremote connect <PORT> fs cp certs/ca-bundle.pem :ca.pem
 mpremote connect <PORT> reset
 ```
 
-如果只固定使用 DeepSeek，也可以安装最小根证书：
-
-```powershell
-mpremote connect <PORT> fs cp certs/digicert-global-root-g2.pem :ca.pem
-```
-
-全量 bundle 会信任 Mozilla 收录的所有公共根 CA；单根证书信任面更小但兼容性更差。详见 [certs/README.md](../certs/README.md)。不想自定义 CA 时，保持 `/ca.pem` 和 TLS 验证开启即可，不需要重复上传或替换。`/setup` 检测到已有 bundle 时，替换提示回答 `N`；Web 的“高级：自定义 CA”仅用于私有 CA、企业内网或自建 API。
+全量 bundle 会信任 Mozilla 收录的所有公共根 CA，兼容性更好，但信任面比只安装所需根证书更大。详见 [certs/README.md](../certs/README.md)。不想自定义 CA 时，保持 `/ca.pem` 和 TLS 验证开启即可，不需要重复上传或替换。`/setup` 检测到已有 bundle 时，替换提示回答 `N`；Web 的“高级：自定义 CA”仅用于私有 CA、企业内网或自建 API。
 
 也可以使用设备脚本预置非敏感 DeepSeek 配置：
 
@@ -252,8 +242,7 @@ SSID:     ESP32-Harness-XXXX
 - `/test api` 发送一次真实小请求，会产生少量费用；
 - `/thinking` 查看或切换思考级别；reasoning 文本默认显示（`show_thinking=true`），可用 `/thinking show off` 隐藏；正文实时打印，并显示耗时、finish_reason、reasoning/正文长度；
 - `/context` 查看近似 token 使用和自动压缩阈值；`/compact` 手动压缩较早历史，`/summary` 查看摘要。
-- `/peripherals` 查看外设配置；GPIO/I2C/SPI/UART/NeoPixel/ADC 默认关闭，必须显式配置后启用。启用后生成代码可用全局 `api` 对象（`api.status()`、`api.gpio`、`api.spi`、`api.i2c`、`api.uart`、`api.neopixel`、`api.adc`）；只允许已配置的允许引脚和总线，禁止 `import machine`。
-- `/peripherals scan 0` 可确认 I2C 设备地址，例如 SSD1306 的 `0x3C`。
+- 生成代码直接使用 MicroPython 的 `machine`、`neopixel`、`framebuf` 等模块；没有 `/peripherals` 配置步骤，也没有 `api` 对象。接线和引脚由用户提供，可用 `I2C.scan()` 确认设备地址（例如 SSD1306 的 `0x3C`）。
 - `/auto run on` 自动执行生成代码并自动反馈；默认关闭，建议只在可信会话开启。
 - 网页“行为”设置可关闭 `background_execution`（默认开启），并调整 `background_max_jobs`（默认 4，范围 1–4）。开启时网页可同时运行多个后台任务、继续发消息或前台运行其他代码；每个任务显示编号、备注和耗时，可分别停止。AUTO 模式且 `auto_feedback` 开启时，设备主线程会自动继续完成的后台结果，不要求用户选择“继续/丢弃”，也不依赖网页保持打开；手动模式仍显示继续/丢弃按钮。AI 或网页按钮可请求停止；`timeout=0`/`infinite` 可让后台任务无截止时间运行，但停止仍依赖协作检查点。串口可用 `/run bg [备注]`、`/background` 和 `/continue [id]`。`background_thread_stack_kb`（默认 32）和 `background_max_records`（默认 8）通常无需修改。它不改变确认、超时或权限规则。
 
@@ -263,7 +252,7 @@ SSID:     ESP32-Harness-XXXX
 |---|---|
 | `config.json` | 非秘密运行参数 |
 | `secrets.json` | Wi-Fi 密码、API Key、网页密码加盐哈希和 AP 密码（明文/哈希） |
-| `ca.pem` | API 根证书或全量 CA bundle |
+| `ca.pem` | 部署器自动安装的全量 CA bundle；自定义 CA 可替换 |
 | `MEMORY.md` | 始终加载的项目上下文 |
 | `skills/<name>/SKILL.md` | 显式保存的 Skill 指令包 |
 | `workspace/` | 持久工作区；`workspace/tmp/` 启动时清空 |

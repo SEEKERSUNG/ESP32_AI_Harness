@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Deploy device files with mpremote. Never invokes firmware flashing tools."""
+"""Deploy device files with mpremote. Never invokes firmware flashing tools.
+
+The full Mozilla CA bundle is copied to ``/ca.pem`` as part of a normal or
+first incremental deployment. ``--changed`` refreshes it only when the local
+bundle changed.
+"""
 
 import argparse
 import hashlib
@@ -17,6 +22,7 @@ except ImportError:
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEVICE = ROOT / "device"
+CA_BUNDLE = ROOT / "certs" / "ca-bundle.pem"
 BUILD = ROOT / "build" / "mpy" / "harness"
 MANIFEST = ROOT / "build" / "deploy-manifest.json"
 
@@ -108,6 +114,11 @@ def current_entries():
         entries["harness/" + source.name] = source_hash(source)
     for name in ("boot.py", "main.py"):
         entries[name] = source_hash(DEVICE / name)
+    if not CA_BUNDLE.exists():
+        raise FileNotFoundError(
+            "CA bundle not found: %s. Restore certs/ca-bundle.pem before "
+            "deploying." % CA_BUNDLE)
+    entries["ca.pem"] = source_hash(CA_BUNDLE)
     return entries
 
 
@@ -187,6 +198,8 @@ def deploy(port, clean=False, reset=True, use_mpy=True, changed=False):
         run(port, "fs", "cp", str(DEVICE / "boot.py"), ":boot.py")
     if not partial or "main.py" in selected:
         run(port, "fs", "cp", str(DEVICE / "main.py"), ":main.py")
+    if not partial or "ca.pem" in selected:
+        run(port, "fs", "cp", str(CA_BUNDLE), ":ca.pem")
     run(port, "exec", "import os\ntry:\n    os.remove('/maintenance.flag')\nexcept OSError:\n    pass")
     if not partial:
         run(port, "fs", "ls", ":")

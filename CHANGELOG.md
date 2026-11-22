@@ -60,6 +60,10 @@
 - `__ask` 选项上限从 4 提高到 8，问题总文本上限从 1600 提高到 2400；
 - `stream_idle_timeout` 默认值从 120 秒提高到 300 秒；缺少 `stream_first_token_timeout` 且值仍为 120 的旧配置在加载时自动迁移，之后显式设置的 120 秒会保留；
 - 新增 `tools/check.py` 主机门禁（编译 + 全套/快速测试）、`tools/deploy.py --changed` 增量部署和 `tools/device_quick_smoke.py` 设备快速烟雾；
+- 部署器默认把 `certs/ca-bundle.pem` 复制为 `/ca.pem`：完整部署、`--clean` 和首次增量部署都会复制，`--changed` 在 bundle 内容变化时更新；删除 `certs/digicert-global-root-g2.pem`，只维护全量 Mozilla bundle；README 和相关文档同步；
+- 自动反馈默认上限 `max_turns` 从 8 提高到 32（范围仍 1–50）；串口 `/auto turns`、网页设置和文档同步；
+- 移除 `/peripherals` 命令、`HardwareAPI`/`HardwareManager`、外设 allowlist 和对应配置字段；生成代码直接 `import machine`/`neopixel`/`framebuf` 并使用真实引脚；旧 `config.json` 中的外设键在加载时丢弃；系统提示词、README、硬件文档和安全说明同步；
+- 网页命令页放开所有非交互命令（配置、Memory/Skill/Workspace 写入、MCP、后台控制、HTTP），风险操作使用浏览器确认并以 `confirm:true` 重试；需要第二行输入、执行生成代码或重启的命令仍使用专用表单/按钮；
 - 开源整理：重写中文 README 并新增英文 `README.en.md`，顶部提供语言切换；清理已移除的 Search API Key 文档引用，补充 `.mpy` 和本地 Claude 设置的忽略规则；
 - 更新 README、架构、命令、开发、安全、Web 和 Anthropic 文档。
 

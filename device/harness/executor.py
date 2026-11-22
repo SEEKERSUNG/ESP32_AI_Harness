@@ -574,9 +574,8 @@ def _writer_print(writer):
 class Executor:
     def __init__(self, device=None, output_limit=4096, recovery=None,
                  timeout_s=20, max_timeout_s=300, feed=None,
-                 cancel_check=None, isolated_output=False, api=None):
+                 cancel_check=None, isolated_output=False):
         self.device = device
-        self.api = api
         self.output_limit = output_limit
         self.recovery = recovery
         self.timeout_s = timeout_s
@@ -719,8 +718,6 @@ class Executor:
                     "device": self.device,
                     "__harness_check": check,
                 }
-                if self.api is not None:
-                    scope["api"] = self.api
                 if isolated:
                     scope["print"] = _writer_print(writer)
                 if instrumented:
