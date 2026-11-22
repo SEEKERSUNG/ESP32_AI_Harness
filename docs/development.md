@@ -54,7 +54,7 @@
 - 命令：非交互命令可用、确认命令返回 `confirm` 并可带 `confirm:true` 重试、交互/代码执行/重启命令拒绝、输出截断、变更命令持锁、只读命令不持锁；`/code` 必须持锁，HTTP 200 中的 `ok:false` 必须在网页显示错误；
 - 状态与历史：pending 清理竞态不返回 500，历史字符预算优先保留最新消息，历史条目返回绝对 `index`/`kind`，`backgrounds` 列表和单任务结果字段有界；
 - 串口：CRLF/LFCR 配对只吞一次，LF-only 和 CR-only 的连续空行必须保留；
-- Web UI：聊天区 Thinking/AUTO 控件不在设置页重复出现，AUTO 开启确认和反馈保持；代码、执行输出和本地记录默认折叠，流式更新保留展开状态，窄屏控件可换行；CA 已安装时高级自定义默认收起，缺失时自动展开且不改变 TLS 验证默认值；实时用户消息通过 `done.user_index` 添加回退按钮，刷新历史后同样显示；
+- Web UI：聊天区 Thinking/AUTO 控件不在设置页重复出现，AUTO 开启确认和反馈保持；代码、执行输出和本地记录默认折叠，流式更新保留展开状态，窄屏控件可换行；CA 已安装时高级自定义默认收起，缺失时自动展开且不改变 TLS 验证默认值；顶栏不再有回退按钮，实时用户消息通过 `done.user_index` 添加回退按钮，手动停止后保留状态轮询并在设备回合结束时刷新历史补上，刷新历史后同样显示；
 - 聊天与执行：auto off 代码卡、auto on 安全代码执行/反馈、无限循环阻止、Skill 永不自动保存、`max_turns`（默认 32）和 `/auto turns` 边界、手动 Run 只反馈一次、客户端断开在步骤间停止；前台/后台 `mode` 分离、多个后台任务并发与排队、`/api/continue {"id"}` 只提交一次、自动继续卡片和回退按钮存在；
 - 线程：`UIRouter` 线程隔离、`Executor.main_runner` 回主线程、worker executor 不回主线程、`Application.run_on_main/pump_main_request`、后台期间允许对话/前台执行但拒绝维护操作、停止单任务/全部任务、共享运行时的全局钩子恢复、协作钩子喂狗与非协作前台代码停止喂狗；
 - 网络：AP 启动/停止、AP 宽限、无管理密码不关 AP、断线开 AP、STA 重试、状态缓存；
@@ -81,7 +81,7 @@ python tools/check.py --quick
 python tools/check.py --tests tests.test_agent tests.test_conversation -k ask
 ```
 
-`tools/check.py` 等价于 `compileall device tools tests` 加对应的 `unittest` 命令，不访问设备。当前有 518 项主机测试。主机依赖和与固件 `_mpy` 匹配的 `mpy-cross`：
+`tools/check.py` 等价于 `compileall device tools tests` 加对应的 `unittest` 命令，不访问设备。当前有 519 项主机测试。主机依赖和与固件 `_mpy` 匹配的 `mpy-cross`：
 
 ```powershell
 python -m venv .venv

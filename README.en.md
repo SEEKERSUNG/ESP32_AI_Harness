@@ -246,7 +246,7 @@ Execution results are fed back to the model according to configuration; subseque
 
 Background jobs run on their own worker threads, suitable for long-running work or when the user wants to keep interacting. Prefer the foreground for short programs. Stop is cooperative: it sets a cancellation flag and raises `ExecutionCancelled` at checkpoints. A job blocked inside a C/SPI call may only stop after a reboot. `timeout=0`/`infinite` allows a background job to run without a harness deadline, but does not suspend the 30-second watchdog.
 
-To rewind context, `/undo` removes the most recent user message and everything after it; `/undo 2` removes the second-most-recent user message and everything after it. The web rewind button in the top bar and the button next to each user message do the same. Rewind only changes conversation context; it does not revert files, GPIO, network or other device side effects.
+To rewind context, `/undo` removes the most recent user message and everything after it; `/undo 2` removes the second-most-recent user message and everything after it. The web button next to each real user message does the same; the top bar no longer duplicates it. Rewind only changes conversation context; it does not revert files, GPIO, network or other device side effects.
 
 Context monitoring and compaction:
 

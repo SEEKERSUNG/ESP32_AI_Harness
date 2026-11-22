@@ -78,7 +78,6 @@ INDEX_HTML = r"""<!doctype html>
           <span id="autoBadge" class="badge danger" hidden>AUTO</span>
         </div>
         <div class="topmeta">
-          <button id="undoBtn" class="ghost" type="button" title="回退最近一轮对话">回退</button>
           <button id="refreshBtn" class="ghost" type="button">刷新</button>
           <button id="settingsBtn" class="ghost" type="button">设置</button>
           <button id="logoutBtn" class="ghost" type="button">退出</button>
@@ -726,7 +725,7 @@ function setBusy(busy){
   state.streaming=busy; $('sendBtn').disabled=busy; $('chatInput').disabled=busy;
   show($('stopBtn'), busy);
   syncBehaviorDisabled();
-  ['undoBtn','refreshBtn','historyBtn','clearBtn','compactBtn','testWifiBtn','testApiBtn'].forEach(function(id){
+  ['refreshBtn','historyBtn','clearBtn','compactBtn','testWifiBtn','testApiBtn'].forEach(function(id){
     var el=$(id); if(el) el.disabled=busy;
   });
 }
@@ -1379,9 +1378,15 @@ function stream(path, value){
     return pump();
   }).catch(function(err){
     if(state.activeStream!==active) return;
+    if(active.stopped){
+      // Keep activeStream set until the device confirms the turn is over.
+      // Clearing it here used to cancel the stop poll and leave the live
+      // user bubble without its rewind button.
+      waitForStoppedTurn(active);
+      return;
+    }
     state.activeStream=null;
     setBusy(false);
-    if(active.stopped){waitForStoppedTurn(active);return;}
     logMessage('system','请求失败: '+err.message,'system');
     if(err.status===401){showLogin();}
   });
@@ -1569,7 +1574,6 @@ document.addEventListener('DOMContentLoaded',function(){
   }
   $('setupProvider').onchange=function(){switchProviderBase('setupProvider','setupBaseUrl');};
   $('cfgProvider').onchange=function(){switchProviderBase('cfgProvider','cfgBaseUrl');};
-  $('undoBtn').onclick=function(){rewindContext({count:1});};
   $('refreshBtn').onclick=function(){refreshStatus().then(refreshHistory).catch(function(e){toast(e.message);});};
   $('logoutBtn').onclick=function(){post('/api/logout',{}).then(function(){showLogin();});};
   $('settingsBtn').onclick=function(){toggleSettings(true);};

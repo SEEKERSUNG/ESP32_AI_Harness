@@ -82,7 +82,7 @@ AP 是 WPA2。首次设置只接受来自 AP 网段的客户端（可用 `web_se
 
 ### 上下文回退
 
-网页顶栏“回退”删除最近一条用户消息及其后的全部回复；每条真实用户消息旁还有“回退到这里”，实时发送的消息在回合结束（`done` 事件）时直接补上按钮，刷新历史后同样显示。两者调用 `POST /api/rewind`，只修改对话上下文，不恢复工作区文件或设备状态。后台任务运行期间拒绝回退；任务完成后回退会丢弃所有未继续的后台结果。压缩摘要不会重建。
+网页不再提供顶栏“回退”按钮；每条真实用户消息旁显示“回退到这里”。实时发送的消息在正常完成（`done` 事件）或手动停止后设备回合结束时补上按钮，刷新历史后同样显示。停止时会轮询设备状态，确认回合结束后刷新历史，因此不会留下没有回退按钮的实时气泡。这些按钮调用 `POST /api/rewind`，删除该用户消息及其后的全部回复，只修改对话上下文，不恢复工作区文件或设备状态。后台任务运行期间拒绝回退；任务完成后回退会丢弃所有未继续的后台结果。压缩摘要不会重建。
 
 ## 并发模型
 
@@ -168,7 +168,7 @@ question, response, code, background, execution, skill, feedback, done, error
 
 每个后台任务提供“停止 #N/继续 #N/丢弃结果”按钮，分别调用 `POST /api/background/stop {"id":N}`、`POST /api/continue {"id":N}` 和 `POST /api/background/discard {"id":N}`；AI 使用内置 `__background start|list|status|stop|note|discard`。AUTO 模式下 AI 可直接用 `action=start` 提交源码并启动任务，非 AUTO 模式会被拒绝，要求改为普通代码块确认；`start` 的明显无限循环默认拒绝，必须显式 `timeout=0` 才允许。停止只设置协作取消标志，在 `__harness_check()`、`range`、`while True` 或 `time.sleep()` 检查点抛出 `ExecutionCancelled`，不会强制杀死阻塞中的 C/SPI 调用；完成后的 `execution` 事件包含 `cancelled`。后台输出通过 `print()` 捕获，直接写 `sys.stdout` 可能丢失。`GET /api/history` 为每条消息返回绝对 `index` 和 `kind`（`user`/`assistant`/`observation`），回退使用该 `index`；`kind=observation` 的 `Local ...` 记录不能作为回退目标。
 
-`/api/chat` 的 `done` 事件额外返回 `user_index`，即本轮用户消息在当前 `agent.history` 中的绝对下标；网页据此在流结束时立即给实时用户气泡添加“回退到这里”按钮，无需刷新历史。其他流的 `user_index` 为 `null`。
+`/api/chat` 的 `done` 事件额外返回 `user_index`，即本轮用户消息在当前 `agent.history` 中的绝对下标；网页据此在流结束时立即给实时用户气泡添加“回退到这里”按钮，无需刷新历史。其他流的 `user_index` 为 `null`。手动停止时浏览器收不到 `done`，网页会保留停止轮询，等 `/api/status` 确认设备回合结束后刷新 `/api/history`，再按每条消息的绝对 `index` 补上回退按钮。
 
 `content`/`reasoning` 按 `web_stream_batch_chars`（默认 32）批量发送；`reasoning` 和 `content` 都不设显示长度上限；非流式最终文本按 2048 字符分片；命令输出仍受 `web_output_limit` 约束，`code.source`、Skill 和执行输出受各自配置上限约束。客户端断开或点击“停止”后，HTTP 客户端在响应头等待、隐藏 reasoning 和正文阶段通过取消检查中止当前模型回合，不保存部分回答；自动执行/反馈也会停止。
 

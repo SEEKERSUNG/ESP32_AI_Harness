@@ -36,7 +36,7 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("每条最多 8192 字符", APP_JS)
 
     def test_rewind_controls_use_history_indices(self):
-        self.assertIn('id="undoBtn"', INDEX_HTML)
+        self.assertNotIn('id="undoBtn"', INDEX_HTML)
         self.assertIn("function rewindContext", APP_JS)
         self.assertIn("function attachRewindButton", APP_JS)
         self.assertIn("/api/rewind", APP_JS)
@@ -135,6 +135,18 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("A tool-only round has no answer text", APP_JS)
         self.assertIn("if(ev.ok && !ev.error) return;", APP_JS)
         self.assertIn("if(!ev.text) return;", APP_JS)
+
+    def test_stopped_stream_waits_for_device_before_history_refresh(self):
+        # Aborting fetch rejects the request. The catch handler must keep
+        # activeStream set so the stop poll can finish, refresh history and
+        # attach the per-message rewind button.
+        self.assertIn(
+            "if(active.stopped){\n"
+            "      // Keep activeStream set until the device confirms the turn is over.",
+            APP_JS)
+        self.assertIn("waitForStoppedTurn(active);\n      return;", APP_JS)
+        self.assertIn("state.activeStream=null;\n    setBusy(false);", APP_JS)
+        self.assertIn("refreshHistory().catch(function(){});", APP_JS)
 
     def test_auto_toggle_is_confirmed_and_preserves_feedback(self):
         self.assertIn("function changeAuto", APP_JS)

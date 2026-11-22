@@ -26,6 +26,8 @@
 
 ### Fixed
 
+- 停止流式响应后实时用户气泡缺少“回退到这里”按钮：中止 fetch 的 `catch` 先清空了 `activeStream`，使 `waitForStoppedTurn` 立即退出，设备回合结束后不会刷新历史。现在停止分支保留 `activeStream` 并持续轮询 `/api/status`，设备空闲后刷新 `/api/history` 并按绝对 `index` 补上按钮；
+- 网页顶栏的“回退”按钮没有实际用途且容易误触，现已移除；每条真实用户消息旁的“回退到这里”、`/undo`、`/rewind` 和 `POST /api/rewind` 保持不变；
 - 压缩后忘记最初问题：新增持久化的 `original_request` 会话锚点，首次用户请求随 `/state/conversation.json` 保存并始终注入系统提示词；压缩、重启和 HISTORY 裁剪不会丢失会话起点，`/clear` 才重置；
 - 网页对话改为按用户请求分组的 turn 卡片：同一轮的每个 thinking 步骤、工具调用/结果、执行结果和最终正文都在一个助手卡片内按顺序展示；assistant reasoning 随对话持久化（每条最多 4096 字符），刷新后仍能看到 thinking，而不是丢标签或出现空助手气泡；
 - 网页 live 渲染与刷新后历史不一致：live 中原生 tool call 直接渲染为紧凑的工具调用步骤，刷新后把历史里的 `Native tool call: ...` 助手内容还原为同样的工具卡片，不再出现空助手气泡或只在刷新后才看到的工具调用；
