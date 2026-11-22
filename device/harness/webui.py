@@ -491,7 +491,7 @@ details.reasoning pre,details.collapsible pre{max-height:240px;overflow:auto;whi
 """
 
 APP_JS = r"""'use strict';
-var state = {status:null, config:null, mcp:null, streaming:false, current:null, reasoning:null, reasoningChars:0, setup:false, setupInfo:null, authed:false, pendingKey:null, pendingEl:null, lastWifiError:'', activeStream:null, behaviorSaving:false, historyLoaded:false, backgroundKey:null, backgroundEl:null, backgroundPhase:null, backgroundTimer:null, backgroundResuming:false, autoContinueSeq:null, autoBusyNotice:false, liveUserEl:null, liveSeq:null, liveContent:'', liveReasoning:'', liveEventIndex:0, liveTimer:null};
+var state = {status:null, config:null, mcp:null, streaming:false, current:null, reasoning:null, reasoningChars:0, setup:false, setupInfo:null, authed:false, pendingKey:null, pendingEl:null, lastWifiError:'', activeStream:null, behaviorSaving:false, historyLoaded:false, backgroundKey:null, backgroundEl:null, backgroundPhase:null, backgroundTimer:null, backgroundResuming:false, autoContinueSeq:null, autoBusyNotice:false, liveUserEl:null, liveSeq:null, liveContent:'', liveReasoning:'', liveEventIndex:0, liveTimer:null, livePolling:false, liveGen:0};
 function $(id){return document.getElementById(id);}
 function setText(el,text){el.textContent = text == null ? '' : String(text);}
 function show(el, yes){el.hidden = !yes;}
@@ -507,6 +507,9 @@ function pageNearBottom(){
   var root=document.scrollingElement||document.documentElement;
   var offset=window.pageYOffset||root.scrollTop||0;
   return root.scrollHeight-window.innerHeight-offset<160;
+}
+function scrollIfStick(stick){
+  if(stick&&chatVisible()) scrollPageBottomSoon();
 }
 function updateEmptyState(){
   var chat=$('chatEmpty'); if(chat) chat.hidden=$('chatLog').childElementCount>0;
@@ -538,9 +541,10 @@ function api(path, options){
 }
 function post(path, value){return api(path,{method:'POST',body:JSON.stringify(value || {})});}
 function logMessage(role, text, cls){
+  var stick=pageNearBottom();
   var log=$('chatLog'); var el=document.createElement('div');
   el.className='msg ' + (cls || role); el.textContent=text || '';
-  log.appendChild(el); updateEmptyState(); autoScrollChat(false); return el;
+  log.appendChild(el); updateEmptyState(); scrollIfStick(stick); return el;
 }
 function commandLog(text){
   var el=document.createElement('div');el.className='msg system';el.textContent=text || '';
@@ -555,9 +559,10 @@ function collapsibleBlock(summaryText, text, open){
   return details;
 }
 function collapsedMessage(summaryText, text){
+  var stick=pageNearBottom();
   var el=document.createElement('div'); el.className='msg system';
   el.appendChild(collapsibleBlock(summaryText,text,false));
-  $('chatLog').appendChild(el); updateEmptyState(); autoScrollChat(false);
+  $('chatLog').appendChild(el); updateEmptyState(); scrollIfStick(stick);
   return el;
 }
 function renderAssistantBody(b){
@@ -602,25 +607,29 @@ function renderAssistantBody(b){
 function appendAssistantText(text){
   var chunk=text || '';
   if(!chunk) return;
+  var stick=pageNearBottom();
   var b=ensureAssistant();
   var fences=chunk.split('```').length-1;
   b.text+=chunk;
   if(fences===0 && b.fenceCount%2===0){
     b.body.appendChild(document.createTextNode(chunk));
-    autoScrollChat(false);
+    scrollIfStick(stick);
     return;
   }
   renderAssistantBody(b);
-  autoScrollChat(false);
+  scrollIfStick(stick);
 }
 function setAssistantText(text){
+  var stick=pageNearBottom();
   var b=ensureAssistant(); b.text=text || ''; renderAssistantBody(b);
+  scrollIfStick(stick);
 }
 function assistantBubble(){
+  var stick=pageNearBottom();
   var el=document.createElement('div'); el.className='msg assistant';
   var body=document.createElement('div'); el.appendChild(body);
   var meta=document.createElement('span'); meta.className='meta'; el.appendChild(meta);
-  $('chatLog').appendChild(el); updateEmptyState(); autoScrollChat(false);
+  $('chatLog').appendChild(el); updateEmptyState(); scrollIfStick(stick);
   return {el:el, body:body, meta:meta, text:'', fenceCount:0};
 }
 function ensureAssistant(){if(!state.current){state.current=assistantBubble();}return state.current;}
@@ -757,19 +766,34 @@ function refreshStatus(){
 }
 function stopLivePoll(){
   if(state.liveTimer){clearTimeout(state.liveTimer);state.liveTimer=null;}
+  state.livePolling=false;
+  state.liveGen+=1;
+  state.liveSeq=null; state.liveContent=''; state.liveReasoning=''; state.liveEventIndex=0;
 }
 function startLivePoll(){
-  if(state.liveTimer||state.streaming) return;
-  state.liveSeq=null; state.liveContent=''; state.liveReasoning=''; state.liveEventIndex=0;
+  if(state.liveTimer||state.livePolling||state.streaming) return;
+  state.liveGen+=1;
+  state.livePolling=true;
   pollLive();
 }
 function pollLive(){
+  var gen=state.liveGen;
   state.liveTimer=null;
-  if(!state.authed||state.streaming) return;
-  if(document.hidden){state.liveTimer=setTimeout(pollLive,800);return;}
+  if(!state.authed||state.streaming){state.livePolling=false;return;}
+  if(document.hidden){
+    state.livePolling=false;
+    state.liveTimer=setTimeout(pollLive,800);
+    return;
+  }
+  state.livePolling=true;
   api('/api/live').then(function(data){
+    if(gen!==state.liveGen||state.streaming) return;
     data=data||{};
-    if(!data.id){state.liveTimer=setTimeout(pollLive,400);return;}
+    if(!data.id){
+      state.livePolling=false;
+      state.liveTimer=setTimeout(pollLive,400);
+      return;
+    }
     if(state.liveSeq!==data.id){
       state.liveSeq=data.id; state.liveContent=''; state.liveReasoning='';
       state.liveEventIndex=0;
@@ -780,32 +804,60 @@ function pollLive(){
     var replace=content!==state.liveContent&&content.indexOf(state.liveContent)!==0;
     if(replace){
       state.current=null; state.reasoning=null; state.reasoningChars=0;
-      if(reasoning) handleEvent({t:'reasoning',d:reasoning});
-      if(content) handleEvent({t:'content',d:content});
-      state.liveContent=content; state.liveReasoning=reasoning;
-    } else {
-      if(content.length>state.liveContent.length){
-        handleEvent({t:'content',d:content.slice(state.liveContent.length)});
-      }
-      if(reasoning.length>state.liveReasoning.length&&
-         reasoning.slice(0,state.liveReasoning.length)===state.liveReasoning){
-        handleEvent({t:'reasoning',d:reasoning.slice(state.liveReasoning.length)});
-      }
-      state.liveContent=content; state.liveReasoning=reasoning;
+      state.liveContent=''; state.liveReasoning='';
     }
     var events=data.events||[];
     var base=data.event_base||0;
+    var pos=state.liveContent.length;
+    // Handle turn/tool events at or before the current content boundary
+    // first, so a model_start (c=0 or c=pos) opens the assistant bubble
+    // before the reasoning drawer is attached to it.
     for(var i=0;i<events.length;i++){
       var absolute=base+i;
-      if(absolute>=state.liveEventIndex){handleEvent(events[i]);state.liveEventIndex=absolute+1;}
+      if(absolute<state.liveEventIndex) continue;
+      var ev=events[i];
+      var cut=typeof ev.c==='number'?ev.c:content.length;
+      if(cut<pos) cut=pos;
+      if(cut>content.length) cut=content.length;
+      if(cut<=pos){
+        handleEvent(ev);
+        state.liveEventIndex=absolute+1;
+      }
     }
+    if(reasoning.length>state.liveReasoning.length&&
+       reasoning.slice(0,state.liveReasoning.length)===state.liveReasoning){
+      handleEvent({t:'reasoning',d:reasoning.slice(state.liveReasoning.length)});
+    }
+    state.liveReasoning=reasoning;
+    for(var i=0;i<events.length;i++){
+      var absolute=base+i;
+      if(absolute<state.liveEventIndex) continue;
+      var ev=events[i];
+      var cut=typeof ev.c==='number'?ev.c:content.length;
+      if(cut<pos) cut=pos;
+      if(cut>content.length) cut=content.length;
+      if(cut>pos){
+        handleEvent({t:'content',d:content.slice(pos,cut)});
+        pos=cut;
+      }
+      handleEvent(ev);
+      state.liveEventIndex=absolute+1;
+    }
+    if(pos<content.length) handleEvent({t:'content',d:content.slice(pos)});
+    state.liveContent=content;
     if(data.active){
+      state.livePolling=false;
       state.liveTimer=setTimeout(pollLive,250);
     } else {
-      state.liveSeq=null; state.liveContent=''; state.liveReasoning='';
+      state.livePolling=false;
+      // Keep the sequence/content/index until refreshStatus sees the live
+      // turn inactive. A status poll may otherwise restart the same id and
+      // replay the last snapshot, duplicating a reply or tool card.
       setTimeout(function(){refreshStatus().catch(function(){});},350);
     }
   }).catch(function(){
+    if(gen!==state.liveGen||state.streaming) return;
+    state.livePolling=false;
     state.liveTimer=setTimeout(pollLive,1200);
   });
 }
@@ -1062,8 +1114,14 @@ function refreshHistory(){
 }
 function handleEvent(ev){
   if(!ev || !ev.t) return;
-  if(ev.t==='model_start'){ state.current=null; state.reasoning=null; state.reasoningChars=0; return; }
+  if(ev.t==='model_start'){
+    // Keep the turn's thinking drawer across retries/tool-call model requests;
+    // only the assistant content bubble starts fresh.
+    state.current=null;
+    return;
+  }
   if(ev.t==='reasoning'){
+    var stick=pageNearBottom();
     var b=ensureAssistant();
     if(!state.reasoning){
       state.reasoning=collapsibleBlock('思考过程 (0 字)','',false);
@@ -1078,6 +1136,7 @@ function handleEvent(ev){
     state.reasoningChars += chunk.length;
     state.reasoning.querySelector('summary').textContent='思考过程 ('+state.reasoningChars+' 字)';
     pre.scrollTop=nearBottom?pre.scrollHeight:previousTop;
+    scrollIfStick(stick);
     return;
   }
   if(ev.t==='content'){
@@ -1126,9 +1185,10 @@ function handleEvent(ev){
   if(ev.t==='error'){ logMessage('system','错误: '+(ev.message||ev.code||''),'system'); return; }
 }
 function card(title){
+  var stick=pageNearBottom();
   var el=document.createElement('div'); el.className='card';
   var h=document.createElement('h4'); h.textContent=title; el.appendChild(h);
-  $('chatLog').appendChild(el); updateEmptyState(); autoScrollChat(false); return el;
+  $('chatLog').appendChild(el); updateEmptyState(); scrollIfStick(stick); return el;
 }
 function renderCode(ev){
   var runnable=ev.runnable!==false;

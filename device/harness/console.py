@@ -428,8 +428,10 @@ class LiveTurn:
         if not self.active:
             return
         self.turns += 1
-        if self.content and not self.content.endswith("\n\n"):
-            self.content += "\n\n"
+        # Give the browser a turn boundary without injecting separator text
+        # into the model content. The event carries the current content and
+        # reasoning offsets so live rendering can split replies correctly.
+        self.add_event({"t": "model_start"})
 
     def _append(self, current, text):
         if not self.active or not text:
@@ -453,10 +455,13 @@ class LiveTurn:
     def add_event(self, event):
         if not self.active:
             return
+        payload = dict(event)
+        payload["c"] = len(self.content)
+        payload["r"] = len(self.reasoning)
         if len(self.events) >= 24:
             self.events.pop(0)
             self.events_dropped += 1
-        self.events.append(event)
+        self.events.append(payload)
 
     def finish(self):
         if not self.active:

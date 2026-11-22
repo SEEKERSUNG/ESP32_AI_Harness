@@ -119,6 +119,15 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("runCommand(line,true)", APP_JS)
         self.assertIn("confirm:!!confirmed", APP_JS)
 
+    def test_live_poll_and_scroll_guards(self):
+        self.assertIn("livePolling", APP_JS)
+        self.assertIn("liveGen", APP_JS)
+        self.assertIn("gen!==state.liveGen", APP_JS)
+        self.assertIn("function scrollIfStick", APP_JS)
+        self.assertIn("var stick=pageNearBottom();", APP_JS)
+        self.assertIn("scrollIfStick(stick)", APP_JS)
+        self.assertIn("Keep the turn's thinking drawer", APP_JS)
+
     def test_auto_toggle_is_confirmed_and_preserves_feedback(self):
         self.assertIn("function changeAuto", APP_JS)
         self.assertIn("AUTO 会自动运行模型生成的代码", APP_JS)

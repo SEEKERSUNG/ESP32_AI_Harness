@@ -26,6 +26,10 @@
 
 ### Fixed
 
+- 网页 live 轮询竞态：状态轮询可能在一个 `/api/live` 请求尚未返回时重置 `liveSeq`/事件索引并启动第二个轮询，导致 thinking 窗口、回复正文或工具卡片重复出现、顺序跳动；现在使用 in-flight 标志和 generation token，只有新回合 id 才重置游标，回合结束后保留游标直到状态确认 inactive；
+- 同一回合内重试或 tool-call 的多个模型请求不再新建多个“思考过程”框；思考抽屉跨 `model_start` 复用，只让正文气泡重新开始；
+- `LiveTurn` 现在在每个模型请求开始时写入带内容/推理偏移的 `model_start` 事件，浏览器按偏移先处理回合/工具事件再追加正文片段，避免多条助手回复被合并到同一个气泡，并保持工具卡片与正文的先后顺序；
+- 网页自动滚动：原先在追加 DOM 后才检查是否接近底部，大块内容会让页面瞬间变高从而停止跟随；现在在追加前捕获 near-bottom，并在下一帧滚动到底部，覆盖正文、thinking、工具/执行卡片和系统消息；
 - 无限循环安检把任何 `while True:` 都当成可疑代码，连有 `break`/`return` 的普通 socket 读取循环也被 `__workspace action=run` 拒绝，模型被迫改写探测脚本；现在按缩进扫描循环体并在去除注释/字符串后识别 `break`/`return`/`raise`，有界循环可通过，真正的无出口循环仍被拒绝；
 - `__workspace action=run` 和串口 `/workspace run` 都用 `code_limit`（默认 12288）截断已写入工作区的脚本，13 KB 的正常脚本被拒绝，尽管 `workspace_file_limit` 允许 32768。现在改用 `Workspace.read_source()` 读取完整脚本并以 `workspace_file_limit` 为上限；`code_limit` 只约束模型生成的 python 代码块。缺少 `action` 时也返回明确的 `action is required; ...` 提示，而不是泛泛的 usage；
 - 自动继续收到 `cancelled/stopped` 的后台结果时，模型把“被用户停止”误判为“任务未完成”，会自动重新启动同一个后台程序。系统提示和原生工具提示现在明确：取消/停止是用户的明确动作，不得自动重启，除非用户再次要求；应报告停止结果；
