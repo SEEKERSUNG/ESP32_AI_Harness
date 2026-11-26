@@ -1,6 +1,7 @@
 import json
 import time
 
+from . import clock
 from .http_tool import HttpTool
 from .llm import (
     LLMStreamCancelled,
@@ -325,7 +326,7 @@ def parse_tool_call(text, args_limit=2048, large_args_limit=None,
     if args is None:
         args = {}
     if name not in ("__skill", "__workspace", "__memory", "__search",
-                    "__ask", "__http", "__background"):
+                    "__ask", "__http", "__background", "__time"):
         if not name.startswith("mcp__"):
             try:
                 validate_name(name)
@@ -1110,6 +1111,13 @@ def native_tool_definitions(config, skills=None, workspace=None, memory=None,
             ["question"],
         ),
         _tool_schema(
+            "__time",
+            "Show the board's current date and time from its RTC, converted "
+            "to the configured UTC offset. Use this whenever the user asks "
+            "for the current time or date; never guess it.",
+            {},
+        ),
+        _tool_schema(
             "__background",
             "Manage background code jobs. Prefer foreground for short tasks; "
             "use action=start only for long-running work or when the user asks "
@@ -1251,6 +1259,9 @@ def _native_tool_prompt(config, skills=None, workspace=None, memory=None):
         "step or execution output. Run small probes (machine.freq(), "
         "device.info(), dir()) directly. Never write the '--- question for you:' "
         "block yourself.",
+        "When the user asks for the current date or time, call __time instead of "
+        "guessing. It returns the board RTC in UTC and in the configured local "
+        "UTC offset.",
         "Prefer foreground execution for short program tasks. Use background only "
         "when the task is long-running, must continue while the user does other "
         "work, or the user explicitly asks for it; briefly say why. Background jobs "
@@ -1340,6 +1351,10 @@ def builtin_tool_prompt(config, skills=None, workspace=None, memory=None):
         "Never write the '--- question for you:' block yourself; the harness renders it "
         "from __ask. "
         "Never use __ask to ask for execution output; the harness returns that automatically.",
+        "\n\nCurrent board time (always available):",
+        '- time: ```tool {"name":"__time","args":{}}```',
+        "Use __time whenever the user asks for the current date or time; never guess. "
+        "It reads the board RTC and converts UTC to the configured local offset.",
         "\n\nBackground execution control (always available):",
         '- list: ```tool {"name":"__background","args":{"action":"list"}}```',
         '- status: ```tool {"name":"__background","args":{"action":"status","id":2}}```',
@@ -1478,7 +1493,7 @@ def builtin_tool_prompt(config, skills=None, workspace=None, memory=None):
             "Stored scripts are data only. With /auto run on, __workspace run executes a .py file directly; "
             "otherwise Harness asks the user to confirm before executing.",
         ])
-    available = ["__ask", "__background"]
+    available = ["__ask", "__time", "__background"]
     if config.get("http_tool_enabled", True):
         available.append("__http")
     if skills is not None:
@@ -2533,6 +2548,8 @@ class Agent:
             result = self._run_background_tool(args)
         elif name == "__http":
             result = self._run_http_tool(args)
+        elif name == "__time":
+            result = self._run_time_tool(args)
         elif name.startswith("mcp__") and self.mcp is not None:
             result = self._run_mcp_tool(name, args)
         else:
@@ -2854,6 +2871,16 @@ class Agent:
             0,
             end_turn=True,
         )
+
+    def _run_time_tool(self, args):
+        started = self._ticks()
+        try:
+            value = clock.snapshot(self.config)
+            return ToolResult(
+                True, clock.format_snapshot(value), "",
+                self._elapsed(started))
+        except Exception as exc:
+            return ToolResult(False, "", str(exc), self._elapsed(started))
 
     def _run_http_tool(self, args):
         tool = getattr(self, "http_tool", None)

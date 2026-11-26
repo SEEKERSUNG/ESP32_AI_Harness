@@ -4,6 +4,7 @@
 
 ### Added
 
+- 自动校时与 `__time` 工具：联网成功后自动通过 NTP 校时，启动时立即尝试，之后按 `ntp_sync_interval_s`（默认 21600 秒/6 小时，0 表示仅首次）刷新，失败 60 秒后重试；新增 `ntp_server`、`ntp_sync_interval_s`、`timezone_offset_minutes`（默认 480，UTC+8）配置及网页“行为”设置。`__time` 直接读取 RTC 的 UTC 时间，返回本地 ISO 时间、UTC、epoch、星期、时区偏移和有效性，模型可用原生或文本工具调用回答当前日期/时间；RTC 本身仍保存 UTC，时区只影响显示，不处理夏令时；
 - 思考文本默认显示：`show_thinking` 默认值改为 `true`，出厂设置或首次启动后 High/Max 思考模式的 reasoning 会直接显示，不再出现“显示 High 但看不到思考”的观感；仍可用 `/thinking show off` 或网页“显示思考文本”关闭；
 - Anthropic 协议的 DeepSeek 思考参数：`AnthropicClient` 检测 DeepSeek 模型或 `deepseek.com` 端点后改发 DeepSeek 的 `thinking: {"type":"enabled"}`（关闭时显式 `disabled`），不再发送会被 DeepSeek 忽略的 Anthropic `adaptive`/`output_config`；修复切到 DeepSeek Anthropic 兼容端点后显示 High 但实际未思考的问题；
 - 网页搜索简化为 AUTO / Bing 两种：移除独立 DeepSeek Search API、`search_url` 和 `search_api_key` 专用 Key，也移除显式的 Anthropic/OpenAI/DeepSeek 选项。`search_provider=auto` 跟随模型 API——Anthropic 使用 Messages API 的 `web_search_20250305` 服务端工具，OpenAI 官方端点使用 Responses API 的 `web_search`，DeepSeek 直连端点使用 `deepseek_web_search` 服务端工具（显式关闭 thinking），OpenCode Go 和其他兼容端点使用 Bing 免 Key 搜索；原生搜索通过一次有界的独立 API 请求执行，失败时自动回退 Bing。显式 `bing` 不回退。Bing 优先请求 `&format=rss`，RSS 无结果或失败时再解析 HTML，并正确区分转义 HTML 标签与 `<`/`>` 比较文本。网页设置只显示 AUTO/Bing 和实际生效提供方；`/search provider` 同步只接受这两个值；`/api/config` 返回 `search_provider_effective`/`search_provider_fallback`；新增 `search_bing_rss`、`search_answer_limit`、`search_native_max_tokens`、`search_anthropic_tool`、`search_openai_tool` 配置；旧 `search_url`/`search_api_key` 在配置加载时从内存中移除；
@@ -26,6 +27,9 @@
 
 ### Fixed
 
+- `__http` 出站信任边界加固：DNS 校验与实际连接原本分别解析，存在 rebinding 窗口；现在把校验过的 IPv4 地址固定用于该次 socket 连接，同时保留原主机名的 TLS SNI 和 Host。跨源重定向会丢弃调用方 Header，HTTPS→HTTP 降级被拒绝；URL 和 Header 中的换行/控制字符、非法 Header 名会被拒绝，避免请求头注入；
+- `tools/deploy.py --changed` 现在跟踪 `harness/__init__.py`，只改 `__version__` 的增量部署不会再被静默跳过；部署器改用当前 Python 的 `sys.executable -m mpremote`，避免虚拟环境中的 `mpy-cross` 与系统 Python 的 `mpremote` 混用；
+- 快速开始此前只创建虚拟环境并安装依赖，后续却调用系统 `python`/`mpremote`；中英文 README 和部署文档现在明确激活虚拟环境，并把“先刷入匹配的 MicroPython v1.29.0 SPIRAM_OCT 固件”放在部署之前；
 - 停止流式响应后实时用户气泡缺少“回退到这里”按钮：中止 fetch 的 `catch` 先清空了 `activeStream`，使 `waitForStoppedTurn` 立即退出，设备回合结束后不会刷新历史。现在停止分支保留 `activeStream` 并持续轮询 `/api/status`，设备空闲后刷新 `/api/history` 并按绝对 `index` 补上按钮；
 - 网页顶栏的“回退”按钮没有实际用途且容易误触，现已移除；每条真实用户消息旁的“回退到这里”、`/undo`、`/rewind` 和 `POST /api/rewind` 保持不变；
 - 压缩后忘记最初问题：新增持久化的 `original_request` 会话锚点，首次用户请求随 `/state/conversation.json` 保存并始终注入系统提示词；压缩、重启和 HISTORY 裁剪不会丢失会话起点，`/clear` 才重置；

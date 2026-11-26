@@ -198,6 +198,15 @@ class URLTests(unittest.TestCase):
     def test_http_url_with_port(self):
         self.assertEqual(("http", "localhost", 8080, "/"), split_url("http://localhost:8080"))
 
+    def test_url_rejects_control_characters(self):
+        for value in (
+            "https://example.com/\r\nX-Injected: 1",
+            "https://example.com/\n",
+            "https://example.com/\t",
+        ):
+            with self.assertRaises(HTTPError):
+                split_url(value)
+
 
 class FlakyStream:
     def __init__(self, payload):
@@ -349,7 +358,8 @@ class ResponseFramingTests(unittest.TestCase):
         client = HttpClient()
         opens = []
 
-        def fake_open(scheme, host, port, tls_verify, ca_file):
+        def fake_open(scheme, host, port, tls_verify, ca_file,
+                      connect_address=None):
             opens.append((host, port))
             client.stream = stream
 

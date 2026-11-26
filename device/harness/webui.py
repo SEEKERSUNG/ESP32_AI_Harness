@@ -218,15 +218,18 @@ INDEX_HTML = r"""<!doctype html>
       <section class="settings-card">
         <div class="card-head">
           <h2>行为</h2>
-          <p class="hint">Thinking 强度和 AUTO 开关已移至对话框旁。AUTO 控制是否自动运行模型生成的代码；此处仅配置思考文本显示和执行结果自动反馈。</p>
+          <p class="hint">Thinking 强度和 AUTO 开关已移至对话框旁。AUTO 控制是否自动运行模型生成的代码；此处还配置思考文本、执行结果自动反馈、NTP/RTC 自动校时和显示时区。</p>
         </div>
         <label class="check"><input id="cfgShowThinking" type="checkbox">显示思考文本</label>
         <label class="check"><input id="cfgAutoFeedback" type="checkbox">自动反馈执行结果</label>
         <label class="check"><input id="cfgBackground" type="checkbox">后台执行代码（完成后自动继续对话）</label>
         <label class="field">同时运行的后台程序数（1-4）<input id="cfgBackgroundMax" type="number" min="1" max="4" step="1"></label>
         <label class="field">自动反馈最大轮数（1-50）<input id="cfgMaxTurns" type="number" min="1" max="50" step="1"></label>
+        <label class="field">NTP 服务器<input id="cfgNtpServer" type="text" maxlength="255" autocomplete="off"></label>
+        <label class="field">时区偏移（分钟，UTC+8 = 480）<input id="cfgTimezoneOffset" type="number" min="-720" max="840" step="1"></label>
+        <label class="field">自动校时间隔（小时，0 = 仅首次）<input id="cfgNtpIntervalHours" type="number" min="0" max="24" step="1"></label>
         <label class="check"><input id="cfgPersistConversation" type="checkbox">保存对话上下文（重启后恢复）</label>
-        <div class="button-row"><button id="behaviorSaveBtn" type="button">保存显示与反馈</button></div>
+        <div class="button-row"><button id="behaviorSaveBtn" type="button">保存行为与时间设置</button></div>
       </section>
       <section class="settings-card">
         <div class="card-head">
@@ -1506,6 +1509,9 @@ function loadConfig(){
     $('cfgBackground').checked=cfg.background_execution!==false;
     $('cfgBackgroundMax').value=cfg.background_max_jobs||4;
     $('cfgMaxTurns').value=cfg.max_turns||32;
+    $('cfgNtpServer').value=cfg.ntp_server||'pool.ntp.org';
+    $('cfgTimezoneOffset').value=cfg.timezone_offset_minutes==null?480:cfg.timezone_offset_minutes;
+    $('cfgNtpIntervalHours').value=Math.round((cfg.ntp_sync_interval_s==null?21600:cfg.ntp_sync_interval_s)/3600*100)/100;
     $('cfgPersistConversation').checked=cfg.persist_conversation!==false;
     $('cfgSearchEnabled').checked=cfg.search_enabled!==false;
     $('cfgSearchProvider').value=cfg.search_provider||'auto';
@@ -1618,7 +1624,11 @@ document.addEventListener('DOMContentLoaded',function(){
     var cfg=state.config||{};
     var currentAuto=(state.status&&state.status.auto)||{};
     var run=typeof cfg.auto_run==='boolean'?cfg.auto_run:!!currentAuto.run;
-    post('/api/config',{show_thinking:$('cfgShowThinking').checked,background_execution:$('cfgBackground').checked,background_max_jobs:parseInt($('cfgBackgroundMax').value,10)||4,max_turns:parseInt($('cfgMaxTurns').value,10)||32,persist_conversation:$('cfgPersistConversation').checked}).then(function(){
+    var ntpHours=parseFloat($('cfgNtpIntervalHours').value);
+    if(!isFinite(ntpHours)||ntpHours<0||ntpHours>24){toast('自动校时间隔需为 0-24 小时');return;}
+    var tzOffset=parseInt($('cfgTimezoneOffset').value,10);
+    if(!isFinite(tzOffset)||tzOffset< -720||tzOffset>840){toast('时区偏移需为 -720 到 840 分钟');return;}
+    post('/api/config',{show_thinking:$('cfgShowThinking').checked,background_execution:$('cfgBackground').checked,background_max_jobs:parseInt($('cfgBackgroundMax').value,10)||4,max_turns:parseInt($('cfgMaxTurns').value,10)||32,persist_conversation:$('cfgPersistConversation').checked,ntp_server:$('cfgNtpServer').value.trim(),timezone_offset_minutes:tzOffset,ntp_sync_interval_s:Math.round(ntpHours*3600)}).then(function(){
       return post('/api/auto',{
         auto_run:run,
         auto_feedback:$('cfgAutoFeedback').checked,

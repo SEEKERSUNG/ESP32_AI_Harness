@@ -29,13 +29,36 @@ mpremote connect <PORT> exec "import sys,os,gc,esp,esp32; print(sys.implementati
 
 正常应看到约 `8 MB` 的 GC 空闲堆和 `16 MB` Flash。
 
-## 2. 更新 MicroPython 固件
+## 2. 准备主机虚拟环境
+
+主机依赖应安装在 Python 虚拟环境中。Windows PowerShell：
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
+
+Linux/macOS：
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+```
+
+后续命令都在这个已激活的终端中执行；新开终端需要重新激活。`requirements.txt` 包含 `mpremote`、`pyserial` 和 `mpy-cross`。`mpy-cross` 版本必须与设备 `_mpy` 匹配；当前固件为 `11014`。部署器通过当前 Python 环境运行 `mpremote`，不会回退到系统 PATH 中的另一份安装。
+
+## 3. 更新 MicroPython 固件
+
+部署脚本不会安装或擦除 MicroPython 固件。首次使用、更换开发板或固件版本不匹配时，先完成本节；日常更新 Harness 不需要重复刷固件。
 
 N16R8 必须使用 **SPIRAM_OCT** 变体，普通 ESP32-S3 固件不能正确使用 Octal PSRAM。
 
 从 <https://micropython.org/download/ESP32_GENERIC_S3/> 下载 v1.29.0 的 `SPIRAM_OCT` 镜像，保存到 `build/firmware/`。文件名会随构建日期变化，下面的 `<firmware>.bin` 替换为实际文件名：
 
 ```powershell
+python -m pip install esptool
 New-Item -ItemType Directory -Force build\firmware | Out-Null
 # 将下载的 ESP32_GENERIC_S3-SPIRAM_OCT-*-v1.29.0.bin 放入 build\firmware\
 ```
@@ -54,15 +77,6 @@ esptool --port <PORT> --baud 460800 write-flash 0 build\firmware\<firmware>.bin
 ```
 
 固件写入会清空整个 Flash，包括旧文件和配置。刷写前应先备份 `boot.py`、`main.py` 等需要保留的文件。
-
-## 3. 安装主机依赖和预编译器
-
-```powershell
-python -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt
-```
-
-`requirements.txt` 包含 `mpremote`、`pyserial` 和 `mpy-cross`。`mpy-cross` 版本必须与设备 `_mpy` 匹配；当前固件为 `11014`。
 
 ## 4. 部署并做本地烟雾测试
 
@@ -131,6 +145,8 @@ python tools/serial_console.py --port <PORT>
 - Base URL：不要附加 `/chat/completions`；
 - CA 路径：默认 `/ca.pem`；部署器会自动安装全量 bundle，直接回车保留即可；
 - TLS 验证：建议保持开启。
+
+联网成功后 Harness 会自动用 `pool.ntp.org` 校时，启动时同步一次，之后默认每 6 小时刷新；设备 RTC 保存 UTC。网页“设置 → 行为”可修改 NTP 服务器、自动校时间隔和显示时区偏移（默认 `480`，即 UTC+8）。模型需要当前日期/时间时可调用内置 `__time`，不需要生成代码读取 RTC。
 
 `python tools/deploy.py` 会自动把 `certs/ca-bundle.pem`（Mozilla 全量公共根证书）复制到设备 `/ca.pem`：完整部署、`--clean` 和首次增量部署都会复制，`--changed` 只在 bundle 内容变化时更新。因此通常不需要手动安装，也不需要为了更换 API 地址重新配置 CA。完整部署会用公共 bundle 覆盖 `/ca.pem`；使用私有 CA 时，请在部署后重新安装。
 

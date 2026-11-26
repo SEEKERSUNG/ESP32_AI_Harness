@@ -406,6 +406,44 @@ class NetworkTests(unittest.TestCase):
         self.assertEqual(1, self.sta.connect_calls)
         self.assertEqual("new-network", self.sta._essid)
 
+    def test_sync_time_once_per_boot_and_force_refresh(self):
+        calls = []
+
+        def settime():
+            calls.append(1)
+
+        ntptime = types.SimpleNamespace(settime=settime)
+        with mock.patch.dict("sys.modules", {"ntptime": ntptime}):
+            self.assertTrue(self.network.sync_time("time.example.test"))
+            self.assertEqual("time.example.test", ntptime.host)
+            self.assertEqual(1, len(calls))
+            self.assertEqual(0, self.network.time_sync_age_ms())
+            self.assertTrue(self.network.status()["time_synced"])
+
+            self.clock.advance(5000)
+            self.assertFalse(self.network.sync_time("time.example.test"))
+            self.assertEqual(1, len(calls))
+            self.assertEqual(5000, self.network.time_sync_age_ms())
+
+            self.assertTrue(self.network.sync_time(
+                "time.example.test", force=True))
+            self.assertEqual(2, len(calls))
+            self.assertEqual(0, self.network.time_sync_age_ms())
+
+    def test_sync_time_reports_ntp_failure(self):
+        def fail():
+            raise OSError("no NTP reply")
+
+        with mock.patch.dict(
+                "sys.modules",
+                {"ntptime": types.SimpleNamespace(settime=fail)}), \
+                mock.patch("harness.device._sleep_ms", lambda _ms: None):
+            with self.assertRaises(RuntimeError) as raised:
+                self.network.sync_time()
+        self.assertIn("no NTP reply", str(raised.exception))
+        self.assertFalse(self.network.status()["time_synced"])
+        self.assertIsNone(self.network.time_sync_age_ms())
+
     def test_status_is_cached_while_network_lock_is_busy(self):
         self.network.start_ap("AP", "esp32setup")
         self.network._lock.acquire()

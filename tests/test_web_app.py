@@ -1226,6 +1226,33 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(200, status.status)
         self.assertEqual("none", status.json["pending"]["kind"])
 
+    def test_config_updates_clock_settings(self):
+        token = self.token()
+        writer = self.call(request("POST", "/api/config", {
+            "ntp_server": "time.example.test",
+            "timezone_offset_minutes": 330,
+            "ntp_sync_interval_s": 7200,
+        }, token=token))
+        self.assertEqual(200, writer.status)
+        self.assertEqual("time.example.test",
+                         self.app.config.get("ntp_server"))
+        self.assertEqual(330,
+                         self.app.config.get("timezone_offset_minutes"))
+        self.assertEqual(7200,
+                         self.app.config.get("ntp_sync_interval_s"))
+        config = self.call(request("GET", "/api/config", token=token))
+        self.assertEqual(330, config.json["timezone_offset_minutes"])
+        self.assertEqual(7200, config.json["ntp_sync_interval_s"])
+        self.assertEqual("time.example.test", config.json["ntp_server"])
+
+        with self.assertRaises(WebError) as raised:
+            self.call(request("POST", "/api/config", {
+                "timezone_offset_minutes": 900,
+            }, token=token))
+        self.assertEqual(400, raised.exception.status)
+        self.assertEqual(330,
+                         self.app.config.get("timezone_offset_minutes"))
+
     def test_config_updates_max_turns_bounds(self):
         token = self.token()
         writer = self.call(request("POST", "/api/config", {

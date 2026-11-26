@@ -2,9 +2,10 @@
 
 The model may request public web pages, JSON APIs and small files. Private,
 loopback, link-local, CGNAT and multicast addresses are blocked before the
-connection is opened, and every redirect is validated again. This is a
-best-effort guard, not a sandbox: DNS rebinding and unusual URL parsers are
-out of scope.
+connection is opened, the validated DNS address is pinned for that socket to
+prevent rebinding, and every redirect is validated again. Caller headers are
+dropped on cross-origin redirects, and HTTPS-to-HTTP downgrades are rejected.
+This remains a best-effort guard, not a sandbox.
 """
 
 import socket
@@ -79,9 +80,13 @@ def is_public_ipv4(host):
         return False
     if a == 192 and b == 168:
         return False
+    # 192.0.0.0/24 is IETF protocol assignment space; 192.0.2.0/24 is
+    # TEST-NET-1. Neither is a useful public fetch target.
     if a == 192 and b == 0 and c in (0, 2):
         return False
     if a == 198 and b in (18, 19, 51):
+        return False
+    if a == 192 and b == 88 and c == 99:
         return False
     if a == 203 and b == 0 and c == 113:
         return False
@@ -135,7 +140,8 @@ def resolve_public_host(host, port):
     return addresses
 
 
-def validate_url(url, config):
+def validate_target(url, config):
+    """Validate a URL and return a DNS-pinned connection address."""
     if not isinstance(url, str) or not url.strip():
         raise HttpToolError("url is required")
     url = url.strip()
@@ -166,7 +172,12 @@ def validate_url(url, config):
             pass
     if port not in allowed:
         raise HttpToolError("Port %s is not allowed" % port)
-    resolve_public_host(host, port)
+    addresses = resolve_public_host(host, port)
+    return scheme, host, port, path, addresses[0]
+
+
+def validate_url(url, config):
+    scheme, host, port, path, _ = validate_target(url, config)
     return scheme, host, port, path
 
 
@@ -174,6 +185,7 @@ _BLOCKED_HEADERS = (
     "host", "content-length", "connection", "transfer-encoding",
     "accept-encoding",
 )
+_HEADER_NAME_PUNCTUATION = "!#$%&'*+-.^_`|~"
 
 
 def validate_headers(value, config):
@@ -189,13 +201,20 @@ def validate_headers(value, config):
     for name, header_value in value.items():
         if not isinstance(name, str) or not isinstance(header_value, str):
             raise HttpToolError("Header names and values must be strings")
-        lower = name.strip().lower()
-        if not lower:
-            raise HttpToolError("Header name is empty")
+        if name != name.strip() or not name:
+            raise HttpToolError("Header names may not have surrounding whitespace")
+        for char in name:
+            if not ("a" <= char <= "z" or "A" <= char <= "Z"
+                    or "0" <= char <= "9"
+                    or char in _HEADER_NAME_PUNCTUATION):
+                raise HttpToolError("Invalid header name: %s" % name)
+        lower = name.lower()
         if lower in _BLOCKED_HEADERS:
             raise HttpToolError("Header %s is managed by the harness" % name)
-        if "\r" in header_value or "\n" in header_value:
-            raise HttpToolError("Header values may not contain newlines")
+        for char in header_value:
+            if (char in "\r\n"
+                    or (ord(char) < 32 and char != "\t") or ord(char) == 127):
+                raise HttpToolError("Headers may not contain control characters")
         if len(name) + len(header_value) > limit:
             raise HttpToolError("Header %s is too long" % name)
         result[name] = header_value
@@ -250,7 +269,7 @@ def fetch(http, config, url, method="GET", headers=None, timeout=None):
         raise HttpToolError("HTTP client is unavailable")
     max_redirects = _int_config(config, "http_tool_max_redirects", 3, 0, 10)
     redirects = 0
-    current = url
+    current = str(url or "").strip().split("#", 1)[0]
     request_timeout = _int_config(
         config, "http_tool_timeout", 30, 1, 120
     )
@@ -262,17 +281,19 @@ def fetch(http, config, url, method="GET", headers=None, timeout=None):
     max_response = _int_config(
         config, "http_tool_response_limit", 262144, 1024, 1048576
     )
+    request_headers = headers or {}
     while True:
-        validate_url(current, config)
+        scheme, host, port, _, address = validate_target(current, config)
         try:
             response = http.request(
                 method,
                 current,
-                headers=headers or {},
+                headers=request_headers,
                 timeout=request_timeout,
                 max_response=max_response,
                 tls_verify=config.get("tls_verify"),
                 ca_file=config.get("ca_file"),
+                connect_address=(address, port),
             )
         except Exception as exc:
             raise HttpToolError("HTTP request failed: %s" % exc)
@@ -281,7 +302,19 @@ def fetch(http, config, url, method="GET", headers=None, timeout=None):
             redirects += 1
             if redirects > max_redirects:
                 raise HttpToolError("Too many redirects")
-            current = _resolve_location(current, location)
+            next_url = _resolve_location(current, location).strip()
+            try:
+                next_scheme, next_host, next_port, _ = split_url(next_url)
+            except HTTPError as exc:
+                raise HttpToolError(str(exc))
+            if scheme == "https" and next_scheme == "http":
+                raise HttpToolError("Redirect from HTTPS to plain HTTP is blocked")
+            # Headers may contain caller-provided credentials. They belong to
+            # the original origin and must not follow a cross-origin redirect.
+            if (next_scheme, next_host.lower(), next_port) != (
+                    scheme, host.lower(), port):
+                request_headers = {}
+            current = next_url
             continue
         return current, response
 

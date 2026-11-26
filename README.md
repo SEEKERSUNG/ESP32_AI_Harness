@@ -48,10 +48,11 @@
 **模型与工具**
 
 - **双 API 协议与原生工具调用**：设置页、`/setup` 和 `/model` 可选择 OpenAI 兼容（`chat/completions`）或 Anthropic Messages（`/v1/messages`）。内置工具优先通过原生 function calling 发送（OpenAI `tools` / Anthropic `input_schema`），端点拒绝原生工具时自动回退到文本 `tool` 块。
-- **内置工具**：`__skill`、`__workspace`、`__memory`、`__search`、`__ask`、`__http`、`__background`；不再加载模型自定义可执行 Tool。
+- **内置工具**：`__skill`、`__workspace`、`__memory`、`__search`、`__ask`、`__http`、`__background`、`__time`；不再加载模型自定义可执行 Tool。
 - **Skills 与 Memory**：Skill 是 Markdown `SKILL.md` 指令包，永不执行；`MEMORY.md` 始终加载，支持读取、追加、删除和替换。
-- **公共网络抓取**：`__http` 支持 GET/HEAD 公共 HTTPS 页面、JSON API 和小文件下载；私有、回环、链路本地、CGNAT 和保留地址在连接前及每次重定向前都会被拒绝。
+- **公共网络抓取**：`__http` 支持 GET/HEAD 公共 HTTPS 页面、JSON API 和小文件下载；私有、回环、链路本地、CGNAT 和保留地址在连接前及每次重定向前都会被拒绝，校验后的 DNS 地址固定用于实际连接，跨源重定向不转发调用方 Header。
 - **模型提问**：模型可通过 `__ask` 提交问题和最多 8 个选项；串口打印编号选项，网页显示问题卡，回答作为下一条用户消息发送。
+- **自动校时与时间工具**：联网成功后自动通过 NTP 校时，默认每 6 小时刷新，断线重连后到期也会重新同步；`__time` 读取板载 RTC，按可配置的固定时区偏移（默认 UTC+8）同时返回本地时间和 UTC，模型可在用户询问时间时直接调用。
 - **MCP 远程工具**：支持 Streamable HTTP 和无状态协议，兼容 `tools/list`、`tools/call`、分页、JSON/SSE 响应和静态 Header；非只读工具默认需要确认。
 
 **执行与硬件**
@@ -110,18 +111,33 @@ git clone https://github.com/SEEKERSUNG/ESP32_AI_Harness.git
 cd ESP32_AI_Harness
 ```
 
-### 2. 主机环境
+### 2. 准备主机虚拟环境
 
-需要 Python 3、`mpremote`、`pyserial`，以及与设备固件匹配的 `mpy-cross`：
+主机依赖推荐安装在 Python 虚拟环境中，避免与系统 Python 混用。Windows PowerShell：
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
 ```
 
-Linux/macOS 使用 `source .venv/bin/activate`，然后执行 `python -m pip install -r requirements.txt`。
+Linux/macOS：
 
-### 3. 主机测试
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+```
+
+后续命令都应在**已激活该虚拟环境的同一终端**中执行；新开终端需要重新激活。激活后，`python`、`mpremote` 和部署器调用的 `mpy-cross` 均来自这个环境。如果 PowerShell 禁止执行 `Activate.ps1`，可改用 `.venv\Scripts\python -m pip ...`、`.venv\Scripts\python tools/check.py`，并把 `mpremote` 换成 `.venv\Scripts\python -m mpremote`。
+
+### 3. 先刷入 MicroPython 固件（首次使用或版本不匹配时）
+
+**`tools/deploy.py` 只部署应用文件，不会安装 MicroPython 固件。** 请先从 [MicroPython 官方下载页](https://micropython.org/download/ESP32_GENERIC_S3/) 下载 **v1.29.0 `ESP32_GENERIC_S3-SPIRAM_OCT`** 镜像，并按照[部署和初始化：更新 MicroPython 固件](docs/setup.md#3-更新-micropython-固件)刷入。N16R8 必须使用 `SPIRAM_OCT` 变体，普通 S3 镜像不能正确使用 Octal PSRAM。
+
+> 刷写固件会擦除整个 Flash，包括已有文件和配置，请先备份。已经运行上述匹配固件时可跳过此步；日常更新 Harness 不需要重复刷固件。
+
+### 4. 主机测试
 
 ```powershell
 python tools/check.py
@@ -129,7 +145,7 @@ python tools/check.py
 
 等价于 `python -m unittest discover -s tests -t . -v` 加 `python -m compileall -q device tools tests`。日常迭代可使用 `python tools/check.py --quick`。
 
-### 4. 部署到 ESP32-S3
+### 5. 部署到 ESP32-S3
 
 ```powershell
 python tools/deploy.py --port COMx
@@ -147,7 +163,7 @@ python tools/deploy.py --port COMx --clean
 
 如果设备已经运行 `esp32>` 控制台，先执行 `/repl` 并确认，部署器会自动清除维护标志并复位。
 
-### 5. 配置 Wi-Fi 和模型
+### 6. 配置 Wi-Fi 和模型
 
 ```powershell
 mpremote connect COMx repl

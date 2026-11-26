@@ -259,6 +259,9 @@ class HTTPBodyReader:
 
 
 def split_url(url):
+    for char in url:
+        if ord(char) < 32 or ord(char) == 127:
+            raise HTTPError("URL contains control characters")
     if url.startswith("https://"):
         scheme = "https"
         rest = url[8:]
@@ -460,7 +463,8 @@ class HttpClient:
                 raise HTTPError("HTTP headers are too large")
 
     def request(self, method, url, body=b"", headers=None, timeout=60,
-                max_response=24576, tls_verify=True, ca_file="/ca.pem"):
+                max_response=24576, tls_verify=True, ca_file="/ca.pem",
+                connect_address=None):
         scheme, host, port, path = split_url(url)
         if isinstance(body, str):
             body = body.encode()
@@ -476,11 +480,12 @@ class HttpClient:
             request_headers["Content-Type"] = "application/json"
         request_headers.update(headers or {})
         return self._request(method, scheme, host, port, path, body, request_headers,
-                             timeout, max_response, tls_verify, ca_file)
+                             timeout, max_response, tls_verify, ca_file,
+                             connect_address)
 
     def _request(self, method, scheme, host, port, path, body, headers, timeout,
-                 max_response, tls_verify, ca_file):
-        key = (scheme, host, port, tls_verify, ca_file)
+                 max_response, tls_verify, ca_file, connect_address=None):
+        key = (scheme, host, port, tls_verify, ca_file, connect_address)
         lines = ["%s %s HTTP/1.1" % (method, path)]
         for name in headers:
             lines.append("%s: %s" % (name, headers[name]))
@@ -491,7 +496,9 @@ class HttpClient:
             reused = self.stream is not None and self.connection_key == key
             try:
                 if not reused:
-                    self._open_connection(scheme, host, port, tls_verify, ca_file)
+                    self._open_connection(
+                        scheme, host, port, tls_verify, ca_file,
+                        connect_address=connect_address)
                     self.connection_key = key
                 self.trace("HTTP send")
                 self.feed()
@@ -522,17 +529,24 @@ class HttpClient:
             raise last_error
         raise HTTPError("HTTPS request failed: %s" % last_error)
 
-    def _open_connection(self, scheme, host, port, tls_verify, ca_file):
+    def _open_connection(self, scheme, host, port, tls_verify, ca_file,
+                         connect_address=None):
         import gc
         import socket
         import ssl
 
         self.close()
-        self.trace("HTTP resolve %s:%s" % (host, port))
-        if self.cancel_check is not None:
-            self.cancel_check()
-        self.feed()
-        address = socket.getaddrinfo(host, port)[0][-1]
+        if connect_address is None:
+            self.trace("HTTP resolve %s:%s" % (host, port))
+            if self.cancel_check is not None:
+                self.cancel_check()
+            self.feed()
+            address = socket.getaddrinfo(host, port)[0][-1]
+        else:
+            # A URL fetch validates the DNS answer before opening the socket.
+            # Passing that exact address here prevents a second DNS lookup from
+            # being rebound to a private address after validation.
+            address = connect_address
         if self.cancel_check is not None:
             self.cancel_check()
         self.feed()

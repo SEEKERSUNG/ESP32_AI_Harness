@@ -29,6 +29,7 @@ from harness.agent import (
     parse_tool_call,
     system_prompt,
 )
+from harness.clock import format_snapshot, snapshot
 from harness.config import Config
 from harness.console import Application
 from harness.device import Board
@@ -65,9 +66,11 @@ class FailingLLM:
 class SavedConversation:
     def __init__(self):
         self.saved = []
+        self.original_request = ""
 
-    def save(self, history, summary=""):
+    def save(self, history, summary="", original_request=""):
         self.saved.append([dict(message) for message in history])
+        self.original_request = original_request
         return True
 
 
@@ -119,6 +122,7 @@ def run():
         config, workspace=object(), memory=object())
     names = [tool["name"] for tool in native]
     assert "__workspace" in names and "__ask" in names, names
+    assert "__time" in names, names
     workspace_tool = [
         tool for tool in native if tool["name"] == "__workspace"][0]
     assert "background" in workspace_tool["parameters"]["properties"]
@@ -163,6 +167,12 @@ def run():
     assert len(agent.history) == 2
     assert agent.last_user_index == 0
     assert agent.pending_question is None
+    clock_text = format_snapshot(snapshot(config))
+    assert "local:" in clock_text and "utc:" in clock_text, clock_text
+    print("clock:", clock_text.replace("\n", " | "))
+    time_result = agent._execute_tool({"name": "__time", "args": {}})
+    assert time_result.ok and "timezone:" in time_result.output, (
+        time_result.observation())
     for count in (8, 9):
         result = agent._ask_user({
             "question": "pick",

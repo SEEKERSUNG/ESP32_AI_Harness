@@ -19,6 +19,7 @@ from .agent import (
     format_question,
 )
 from .background import BackgroundPool
+from .clock import TimeSync
 from .config import Config, join_path, write_text
 from .conversation import BackgroundStore, ConversationStore
 from .device import Board, Network
@@ -527,6 +528,7 @@ class Application:
         self.board = Board()
         self.network = network or Network(self.feed)
         self.network.feed = self.feed
+        self.time_sync = TimeSync(self.config, self.network)
         self.http = http or HttpClient(self.feed)
         self.http.feed = self.feed
         self.http.cancel_check = self.check_cancel
@@ -1624,6 +1626,7 @@ class Application:
                 grace_ms=self.config.get("ap_grace_ms", 300000) if password_set else None,
             )
             self.ui.line("Wi-Fi connected: %s" % status.get("sta_ip", ""))
+            self.time_sync.maybe_sync()
         except Exception as exc:
             self.ui.line("Wi-Fi connection failed: %s" % exc)
             if not self.network.status().get("ap_active"):
@@ -1720,6 +1723,7 @@ class Application:
                     )
                 finally:
                     self.end_operation()
+        self.time_sync.maybe_sync()
 
     def show_web_status(self):
         status = self.network.status()
@@ -1802,12 +1806,11 @@ class Application:
             self.config.get("wifi_timeout"),
             grace_ms=self.config.get("ap_grace_ms", 300000),
         )
-        if self.config.get("tls_verify"):
-            try:
-                self.network.sync_time(self.config.get("ntp_server"))
-            except Exception:
-                if not self.network.time_is_valid():
-                    raise
+        self.time_sync.maybe_sync()
+        if self.config.get("tls_verify") and not self.network.time_is_valid():
+            raise RuntimeError(
+                "NTP synchronization failed: %s"
+                % (self.time_sync.last_error or "RTC time is not valid"))
 
     def prepare_cloud(self):
         self.prepare_network()
@@ -2644,6 +2647,7 @@ class Application:
             )
         self.ui.line("Wi-Fi connected: %s; AP remains for %s seconds if active." % (
             status["ip"], int(self.config.get("ap_grace_ms", 300000)) // 1000))
+        self.time_sync.maybe_sync()
 
     def configure_model(self):
         current_provider = normalize_api_provider(

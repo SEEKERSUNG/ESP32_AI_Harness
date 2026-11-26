@@ -48,10 +48,11 @@ A local MicroPython agent harness that runs entirely on an **ESP32-S3 N16R8 (16 
 **Models and tools**
 
 - **Two API protocols with native tool calling** — choose OpenAI-compatible (`chat/completions`) or Anthropic Messages (`/v1/messages`) in setup, `/model` or the web UI. Built-in tools are sent through native function calling (OpenAI `tools` / Anthropic `input_schema`), with an automatic fallback to a textual `tool` block when an endpoint rejects native tools.
-- **Built-in tools** — `__skill`, `__workspace`, `__memory`, `__search`, `__ask`, `__http`, `__background`. Model-defined executable tools are no longer loaded.
+- **Built-in tools** — `__skill`, `__workspace`, `__memory`, `__search`, `__ask`, `__http`, `__background`, `__time`. Model-defined executable tools are no longer loaded.
 - **Skills and memory** — skills are Markdown `SKILL.md` instruction packages and are never executed. `MEMORY.md` is always loaded and supports read, append, delete and replace.
-- **Public HTTP fetching** — `__http` supports GET/HEAD for public HTTPS pages, JSON APIs and small downloads. Private, loopback, link-local, CGNAT and reserved addresses are rejected before connecting and again on every redirect.
+- **Public HTTP fetching** — `__http` supports GET/HEAD for public HTTPS pages, JSON APIs and small downloads. Private, loopback, link-local, CGNAT and reserved addresses are rejected before connecting and again on every redirect; the validated DNS address is pinned for the actual connection, and caller headers are dropped on cross-origin redirects.
 - **Model questions** — `__ask` lets the model submit a question with up to eight options. The serial console prints numbered options; the web UI renders a question card. The answer is sent as the next user message.
+- **Automatic time sync and time tool** — after Wi-Fi connects the harness synchronizes the RTC over NTP, refreshes it every six hours by default and again after a reconnect once due. `__time` reads the board RTC and returns both local time (configurable fixed UTC offset, default UTC+8) and UTC, so the model can answer time/date questions directly.
 - **Remote MCP tools** — Streamable HTTP and stateless protocols, `tools/list`, `tools/call`, pagination, JSON/SSE responses and static headers. Non-read-only tools require confirmation by default.
 
 **Execution and hardware**
@@ -110,18 +111,33 @@ git clone https://github.com/SEEKERSUNG/ESP32_AI_Harness.git
 cd ESP32_AI_Harness
 ```
 
-### 2. Host environment
+### 2. Prepare a host virtual environment
 
-You need Python 3, `mpremote`, `pyserial` and an `mpy-cross` matching the device firmware:
+Install the host dependencies in a Python virtual environment so they do not mix with the system Python. Windows PowerShell:
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
 ```
 
-On Linux/macOS use `source .venv/bin/activate`, then `python -m pip install -r requirements.txt`.
+Linux/macOS:
 
-### 3. Host tests
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+```
+
+Run the remaining commands in the **same terminal with that environment activated**; activate it again after opening a new terminal. Once active, `python`, `mpremote`, and the `mpy-cross` used by the deployer all come from this environment. If PowerShell blocks `Activate.ps1`, use `.venv\Scripts\python -m pip ...`, `.venv\Scripts\python tools/check.py`, and replace `mpremote` with `.venv\Scripts\python -m mpremote`.
+
+### 3. Flash MicroPython first (first use or firmware mismatch)
+
+**`tools/deploy.py` deploys application files only; it does not install MicroPython.** Download the **v1.29.0 `ESP32_GENERIC_S3-SPIRAM_OCT`** image from the [official MicroPython download page](https://micropython.org/download/ESP32_GENERIC_S3/) and flash it as described in [Deployment and setup: updating MicroPython firmware](docs/setup.md#3-更新-micropython-固件). An N16R8 board must use the `SPIRAM_OCT` variant; the regular S3 image cannot use octal PSRAM correctly.
+
+> Flashing firmware erases the entire flash, including existing files and configuration, so back them up first. Skip this step if the matching firmware is already installed; normal Harness upgrades do not require reflashing.
+
+### 4. Host tests
 
 ```powershell
 python tools/check.py
@@ -129,7 +145,7 @@ python tools/check.py
 
 This is equivalent to `python -m unittest discover -s tests -t . -v` plus `python -m compileall -q device tools tests`. Use `python tools/check.py --quick` while iterating.
 
-### 4. Deploy to the ESP32-S3
+### 5. Deploy to the ESP32-S3
 
 ```powershell
 python tools/deploy.py --port COMx
@@ -147,7 +163,7 @@ The deployer only writes MicroPython VFS files. It does not erase flash or modif
 
 If the `esp32>` console is running, enter `/repl` and confirm first; the deployer clears the maintenance flag and reboots the board automatically.
 
-### 5. Configure Wi-Fi and the model
+### 6. Configure Wi-Fi and the model
 
 ```powershell
 mpremote connect COMx repl

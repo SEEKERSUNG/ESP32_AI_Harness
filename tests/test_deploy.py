@@ -33,11 +33,52 @@ class DeployManifestTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
+    def test_run_uses_mpremote_from_the_current_python_environment(self):
+        completed = mock.Mock(stdout="")
+        with mock.patch.object(deploy.subprocess, "run",
+                               return_value=completed) as run, \
+                mock.patch("builtins.print"):
+            result = deploy.run("COM0", "fs", "ls", ":", capture=True)
+        command = run.call_args.args[0]
+        self.assertEqual(
+            [deploy.sys.executable, "-m", "mpremote", "connect", "COM0",
+             "fs", "ls", ":"], command)
+        self.assertIs(result, completed)
+
     def test_current_entries_tracks_harness_boot_and_ca_files(self):
         entries = deploy.current_entries()
         self.assertEqual(
-            {"harness/agent.py", "boot.py", "main.py", "ca.pem"},
+            {"harness/__init__.py", "harness/agent.py", "boot.py", "main.py",
+             "ca.pem"},
             set(entries))
+
+    def test_changed_deploy_tracks_init_version_file(self):
+        entries = deploy.current_entries()
+        (self.device / "harness" / "__init__.py").write_text(
+            '__version__ = "0.5.0"\n', encoding="utf-8")
+        updated = deploy.current_entries()
+        self.assertNotEqual(
+            entries["harness/__init__.py"], updated["harness/__init__.py"])
+
+    def test_changed_deploy_copies_changed_init_file(self):
+        deploy.save_manifest(deploy.current_entries())
+        init = self.device / "harness" / "__init__.py"
+        init.write_text('__version__ = "0.5.0"\n', encoding="utf-8")
+        calls = []
+
+        def fake_run(port, *args, capture=False):
+            calls.append((port, args, capture))
+            return mock.Mock(stdout="")
+
+        with mock.patch.object(deploy, "run", side_effect=fake_run), \
+                mock.patch("builtins.print"):
+            deploy.deploy("COM0", reset=False, use_mpy=False, changed=True)
+        self.assertIn(
+            ("COM0", ("fs", "cp", str(init), ":harness/__init__.py"), False),
+            calls)
+        self.assertFalse(any(
+            args[:2] == ("fs", "cp") and ":harness/agent.py" in args
+            for _, args, _ in calls))
 
     def test_deploy_copies_full_ca_bundle(self):
         calls = []

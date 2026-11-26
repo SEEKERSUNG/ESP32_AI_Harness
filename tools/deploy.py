@@ -61,7 +61,10 @@ CLEAN_CODE = (
 
 
 def run(port, *args, capture=False):
-    command = ["mpremote", "connect", port, *args]
+    # Use mpremote from the same Python environment as this script. Calling a
+    # PATH executable could silently mix a virtualenv's mpy-cross with the
+    # system Python's mpremote.
+    command = [sys.executable, "-m", "mpremote", "connect", port, *args]
     print("+", " ".join(command))
     return subprocess.run(
         command,
@@ -109,8 +112,8 @@ def source_hash(path):
 def current_entries():
     entries = {}
     for source in sorted((DEVICE / "harness").glob("*.py")):
-        if source.name == "__init__.py":
-            continue
+        # __init__.py is small but carries __version__; track it so --changed
+        # does not silently skip a version-only update.
         entries["harness/" + source.name] = source_hash(source)
     for name in ("boot.py", "main.py"):
         entries[name] = source_hash(DEVICE / name)

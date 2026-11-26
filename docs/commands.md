@@ -165,7 +165,15 @@ Skill 是 Markdown 指令包，放在 `/skills/<name>/SKILL.md`，不是可执�
 
 ## 内置工具
 
-Harness 不再支持模型自定义可执行 Tool。模型通过原生 function calling 调用内置工具：`__skill`、`__workspace`、`__memory`、`__search`、`__ask`、`__http` 和 `__background`。OpenAI 兼容端点使用 `tools`，Anthropic 使用 `input_schema`；工具结果以原生 assistant/tool 消息回传。端点拒绝原生工具时自动回退到文本 `tool` 块，也可用 `/native off` 强制使用文本协议。单次任务最多 `max_tool_calls` 次连续调用（默认 16）。`__background` 只查看/请求停止后台任务；内置工具直接读写 Skill、Workspace、MEMORY、Search/HTTP 或后台状态，不加载任意本地代码。
+Harness 不再支持模型自定义可执行 Tool。模型通过原生 function calling 调用内置工具：`__skill`、`__workspace`、`__memory`、`__search`、`__ask`、`__http`、`__background` 和 `__time`。OpenAI 兼容端点使用 `tools`，Anthropic 使用 `input_schema`；工具结果以原生 assistant/tool 消息回传。端点拒绝原生工具时自动回退到文本 `tool` 块，也可用 `/native off` 强制使用文本协议。单次任务最多 `max_tool_calls` 次连续调用（默认 16）。`__background` 只查看/请求停止后台任务；`__time` 读取 RTC 并按配置时区返回本地时间/UTC；内置工具直接读写 Skill、Workspace、MEMORY、Search/HTTP 或后台状态，不加载任意本地代码。
+
+`__time` 用于回答“现在几点/今天几号”，直接读取 `machine.RTC().datetime()`，不依赖模型猜测：
+
+```json
+{"name":"__time","args":{}}
+```
+
+返回值包含 `local`（带 UTC 偏移和星期）、`utc`、Unix epoch、配置偏移和 `valid` 标记。时区通过 `timezone_offset_minutes` 配置，默认 `480`（UTC+8）；设备 RTC 本身仍保存 UTC。时区是固定偏移，不自动处理夏令时。
 
 `__ask` 是唯一会结束当前模型回合的内置工具：
 

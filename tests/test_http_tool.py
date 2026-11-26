@@ -24,7 +24,8 @@ class FakeHttp:
         self.calls = []
 
     def request(self, method, url, body=b"", headers=None, timeout=60,
-                max_response=24576, tls_verify=True, ca_file="/ca.pem"):
+                max_response=24576, tls_verify=True, ca_file="/ca.pem",
+                connect_address=None):
         self.calls.append({
             "method": method,
             "url": url,
@@ -33,6 +34,7 @@ class FakeHttp:
             "max_response": max_response,
             "tls_verify": tls_verify,
             "ca_file": ca_file,
+            "connect_address": connect_address,
         })
         return self.responses.pop(0)
 
@@ -76,7 +78,8 @@ class UrlValidationTests(unittest.TestCase):
             "127.0.0.1", "10.0.0.1", "172.16.0.1", "172.31.255.255",
             "192.168.1.1", "169.254.169.254", "100.64.0.1",
             "0.0.0.0", "224.0.0.1", "255.255.255.255",
-            "192.0.2.1", "198.51.100.1", "203.0.113.1",
+            "192.0.0.9", "192.0.2.1", "192.88.99.1", "198.18.0.1",
+            "198.51.100.1", "203.0.113.1",
         ):
             self.assertFalse(is_public_ipv4(value), value)
 
@@ -124,6 +127,10 @@ class UrlValidationTests(unittest.TestCase):
             {"Host": "evil"},
             {"Content-Length": "1"},
             {"X-Test": "a\r\nInjected: 1"},
+            {"X-Test\r\nInjected": "1"},
+            {"X Test": "1"},
+            {"X-Test ": "1"},
+            {"X:Test": "1"},
         ):
             with self.assertRaises(HttpToolError):
                 validate_headers(value, cfg)
@@ -143,6 +150,24 @@ class HttpToolTests(unittest.TestCase):
         self.assertIn("hello", result.output)
         self.assertNotIn("world", result.output)
         self.assertEqual("GET", http.calls[0]["method"])
+        self.assertEqual(("1.1.1.1", 443), http.calls[0]["connect_address"])
+
+    def test_dns_result_is_pinned_for_the_connection(self):
+        public = [(2, 1, 6, "", ("93.184.216.34", 443))]
+        http = FakeHttp([
+            HTTPResponse(200, {"content-type": "text/plain"}, b"ok"),
+        ])
+        with mock.patch("harness.http_tool.socket.getaddrinfo",
+                        return_value=public):
+            result = HttpTool(config(), http).run({
+                "action": "get", "url": "https://example.com/page",
+            })
+        self.assertTrue(result.ok, result.error)
+        # TLS SNI and Host still use the hostname, but connect() must use the
+        # exact address that passed the public-IP validation.
+        self.assertEqual("https://example.com/page", http.calls[0]["url"])
+        self.assertEqual(("93.184.216.34", 443),
+                         http.calls[0]["connect_address"])
 
     def test_get_rejects_binary_and_http_errors(self):
         http = FakeHttp([
@@ -187,6 +212,45 @@ class HttpToolTests(unittest.TestCase):
         })
         self.assertFalse(result.ok)
         self.assertIn("blocked", result.error)
+        self.assertEqual(1, len(http.calls))
+
+    def test_cross_origin_redirect_drops_caller_headers(self):
+        http = FakeHttp([
+            HTTPResponse(302, {"location": "https://8.8.8.8/next"}, b""),
+            HTTPResponse(200, {"content-type": "text/plain"}, b"ok"),
+        ])
+        result = HttpTool(config(), http).run({
+            "action": "get", "url": "https://1.1.1.1/",
+            "headers": {"Authorization": "Bearer secret",
+                        "X-Custom": "value"},
+        })
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(
+            {"Authorization": "Bearer secret", "X-Custom": "value"},
+            http.calls[0]["headers"])
+        self.assertEqual({}, http.calls[1]["headers"])
+
+    def test_same_origin_redirect_keeps_caller_headers(self):
+        http = FakeHttp([
+            HTTPResponse(302, {"location": "/next"}, b""),
+            HTTPResponse(200, {"content-type": "text/plain"}, b"ok"),
+        ])
+        result = HttpTool(config(), http).run({
+            "action": "get", "url": "https://1.1.1.1/",
+            "headers": {"X-Custom": "value"},
+        })
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual({"X-Custom": "value"}, http.calls[1]["headers"])
+
+    def test_https_to_http_redirect_is_blocked(self):
+        http = FakeHttp([
+            HTTPResponse(302, {"location": "http://1.1.1.1/next"}, b""),
+        ])
+        result = HttpTool(config(http_tool_allow_http=True), http).run({
+            "action": "get", "url": "https://1.1.1.1/",
+        })
+        self.assertFalse(result.ok)
+        self.assertIn("plain HTTP is blocked", result.error)
         self.assertEqual(1, len(http.calls))
 
     def test_download_writes_workspace_and_checks_limit(self):

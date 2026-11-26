@@ -58,7 +58,7 @@ AP 是 WPA2。首次设置只接受来自 AP 网段的客户端（可用 `web_se
 - 代码确认：默认显示“运行/丢弃”；`auto_run=true` 时安全代码自动执行并自动反馈。
 - Skill：显示提案卡，可保存或丢弃；Skill 永不自动保存。
 - 命令页：非交互 `/` 命令和输出；需要确认的命令会弹出确认框，交互式命令会提示使用对应表单或串口。
-- 设置：Wi-Fi、API 协议（OpenAI 兼容/Anthropic）、Base URL、Model、API Key、TLS 验证、CA 路径、CA PEM、MCP 服务器 JSON、网页搜索（启用、provider auto/bing、实际生效提供方）、公共 HTTP 抓取（`__http` 启用、明文 HTTP 开关）、管理密码、AP 密码、思考文本显示、自动反馈、对话持久化、清空/压缩上下文、测试 Wi-Fi/API，以及恢复出厂设置。Thinking 强度和 AUTO 不再重复放在设置页，而是在对话框旁直接操作。
+- 设置：Wi-Fi、API 协议（OpenAI 兼容/Anthropic）、Base URL、Model、API Key、TLS 验证、CA 路径、CA PEM、MCP 服务器 JSON、网页搜索（启用、provider auto/bing、实际生效提供方）、公共 HTTP 抓取（`__http` 启用、明文 HTTP 开关）、NTP 服务器、显示时区偏移、自动校时间隔、管理密码、AP 密码、思考文本显示、自动反馈、对话持久化、清空/压缩上下文、测试 Wi-Fi/API，以及恢复出厂设置。Thinking 强度和 AUTO 不再重复放在设置页，而是在对话框旁直接操作。
 - 恢复出厂设置：需勾选确认并再次输入当前管理密码；删除 `config.json`、`secrets.json`、`mcp.json`、`MEMORY.md`、待恢复代码、Skill、旧版 Tool 目录、工作区、`/state` 持久对话和 RAM 中的对话状态后重启。固件、启动文件和公共 CA 保留；Wi-Fi 配置清除后会回到设备 AP 首次设置流程。
 - CA 配置：页面明确提示“不想自定义时保持原样即可”。已检测到 CA 文件时，路径和 PEM 上传默认收在“高级：自定义 CA”折叠区；部署器会自动把全量 bundle 安装到 `/ca.pem`，通常无需替换。检测不到 CA 文件时自动展开并提示安装。折叠只简化界面，不会关闭 `tls_verify`。
 - 状态：STA/AP 模式、IP、AP 宽限倒计时、Wi-Fi 错误、堆、历史/上下文、待处理项、待回答问题、会话数。状态接口使用一次性 pending 快照，串口同时运行或丢弃提案不会把正常轮询变成 500。
@@ -208,10 +208,15 @@ question, response, code, background, execution, skill, feedback, done, error
 | `wifi_lost_grace_ms` | `30000` | 断线多久后开 AP |
 | `wifi_reconnect_interval` | `60000` | STA 重试间隔 |
 | `web_setup_ap_only` | `true` | 首次设置仅接受 AP 客户端 |
+| `ntp_server` | `pool.ntp.org` | 自动校时使用的 NTP 服务器 |
+| `ntp_sync_interval_s` | `21600` | 自动校时间隔；`0` 表示仅启动后首次 |
+| `timezone_offset_minutes` | `480` | 固定显示时区偏移，UTC+8 为 `480`；范围 -720–840 |
 
 搜索配置也可通过 `/api/config` 读取/更新：`search_enabled`、`search_provider`（仅 `auto`/`bing`）、`search_bing_url`；结果/超时等上限可通过 `config.json` 调整。`/api/config` 还返回只读的 `search_provider_effective` 和 `search_provider_fallback`，用于显示 `auto` 当前解析到的提供方。`auto` 跟随模型 API：Anthropic 使用内置 web_search，OpenAI 官方端点使用 Responses web_search，DeepSeek 直连端点使用 `deepseek_web_search` 服务端搜索，OpenCode Go 和其他兼容端点使用 Bing 免 Key 搜索；原生搜索失败时回退 Bing，显式 `bing` 不回退。独立的 DeepSeek Search API、`search_url` 和 `search_api_key` 已移除。
 
 公共 HTTP 抓取配置：`http_tool_enabled`、`http_tool_allow_http`（默认 `false`）、`http_tool_timeout`、`http_tool_response_limit`、`http_tool_output_limit`、`http_tool_download_limit`、`http_tool_max_redirects`、`http_tool_allowed_ports`。网页设置提供启用和明文 HTTP 开关；其余通过 `/api/config` 或 `config.json` 调整。
+
+时间设置可通过 `/api/config` 或网页“行为”卡片读取/更新：`ntp_server`、`ntp_sync_interval_s`（0–86400 秒）、`timezone_offset_minutes`（-720–840）。NTP 把 RTC 写成 UTC；`__time` 只把显示结果转换为配置偏移，默认北京时间。RTC 时间不会写回本地时区。
 
 模型请求相关超时也可通过 `/api/config` 读取/更新：`stream_header_timeout`（默认 300 秒）、`stream_idle_timeout`（默认 300 秒）、`stream_event_idle_timeout`（默认 300 秒）、`stream_first_token_timeout`（默认 600 秒）、`request_timeout`、`api_retries`、`api_retry_base_ms`、`api_retry_max_ms`、`api_retry_after_max_ms`、`api_retry_jitter_pct`。`model` 事件额外返回 `headers_ms`、`first_token_ms`、`token_count`、`max_gap_ms`、`tail_gap_ms` 以及三类超时预算，便于区分网关排队和模型输出慢；`tail_gap_ms` 是最后一次真实 token 到流结束/超时的间隔。
 

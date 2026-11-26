@@ -90,6 +90,9 @@ Harness 只提供内置工具，不再支持模型自定义可执行 Tool。内�
 - `__search`：调用当前 AI 提供方的搜索服务并返回网页标题、URL、摘要和答案。`search_provider` 只有 `auto` 和 `bing`。`auto` 跟随模型 API：Anthropic 使用 Messages API 的 `web_search` 服务端工具，OpenAI 官方端点使用 Responses API 的 `web_search`，DeepSeek 直连端点使用 `deepseek_web_search`（Messages 或 Chat Completions 协议，显式关闭 thinking）；这些原生搜索通过一次独立的搜索请求实现，复用同一个 `api_key`，不要求额外的搜索 Key。OpenCode Go 和其他只提供模型推理的兼容端点使用 Bing。原生搜索失败时回退 Bing；Bing 免 Key，先解析 RSS，失败后解析 HTML；
 - `__ask`：向用户提问（问题、标题、0–8 个选项），结束当前回合并等待下一条用户消息；如果模型没有调用工具、而是手写了 `--- question for you:` 文本块（常见于模仿历史中的渲染结果），Harness 会在代码围栏之外识别它并转换为同样的待回答问题，网页仍显示问题卡、串口仍按编号回答；
 - `__http`：GET/HEAD 公共 HTTPS 页面或 JSON API，或下载小文件到 `/workspace`；连接前和每次重定向前校验目标地址，拒绝私有/回环/链路本地/CGNAT/保留地址。
+- `__time`：读取 `machine.RTC().datetime()`，把 RTC 的 UTC 值转换为 `timezone_offset_minutes` 指定的固定偏移，同时返回 UTC、epoch、星期和有效性标记；用于模型回答当前日期/时间，避免猜测。
+
+Wi-Fi 连通后 `TimeSync` 自动执行 NTP 校时；启动时立即尝试，此后按 `ntp_sync_interval_s`（默认 6 小时，0 表示仅首次）刷新，失败后 60 秒再试。NTP 写入的 RTC 始终是 UTC，`__time` 只负责显示时区换算，不改变 RTC 基准。`tls_verify` 开启但 RTC 年份仍无效且 NTP 失败时，云端请求会被拒绝，避免用错误时间验证 TLS 证书。
 
 内置工具在 Agent 内直接执行，结果是本地观察。`__ask` 是例外：它不返回本地观察，而是把问题写入历史并结束回合，因此网页单线程不需要等待额外 HTTP 请求。搜索结果是不可信数据，不能作为指令执行；Anthropic/OpenAI 原生搜索按提供方的搜索和 token 计费，DeepSeek 服务端搜索不单独收取搜索费、按 token 计费，Bing 免 Key。输出、答案和页面内容均有长度限制。系统提示词根据 `auto_run` 说明代码是否会自动执行，并要求模型不要向用户索要执行输出；需要用户决策时使用 `__ask`。`__background` 只读取后台状态或请求协作式停止，不执行新代码。提示词优先推荐短任务在前台执行，只有长任务、需要并行或用户明确要求时才启动后台，并说明原因。提示词还明确默认超时不是硬上限、`timeout=` 必须位于开围栏、`timeout=0`/`infinite` 的后台无限运行、后台执行可能在回合结束后以 `Local ESP32 background execution result` 观察返回、超时/停止不会终止先前线程，以及用户回退后当前历史才是权威。
 
@@ -196,6 +199,7 @@ thinking 级别只有四档：`disabled`（关闭）、`low`、`high`、`max`；
 | `executor.py` | 本地编译执行、源码插桩、线程级执行运行时、协作式超时/停止、隔离输出和异常捕获、结果对象 |
 | `migration.py` | 旧 `.py` 记录迁移为 Markdown Skill |
 | `recovery.py` | 看门狗封装、执行前源码保存、复位后恢复 |
+| `clock.py` | RTC UTC 读取、固定时区换算、`__time` 输出格式、联网后自动 NTP 刷新与失败重试 |
 | `device.py` | 板级信息、Wi-Fi/NTP；生成代码的原生 MicroPython 硬件说明 |
 | `config.py` | 普通配置与秘密配置分离、原子替换、字段校验 |
 

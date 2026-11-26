@@ -28,6 +28,7 @@
 - `__search`：只有 `auto` / `bing` 两种设置；`auto` 跟随模型 API 选择 Anthropic `web_search`、OpenAI Responses `web_search`、DeepSeek `deepseek_web_search`（Messages/Chat Completions 两种协议，关闭 thinking）或 Bing；count 上限、结果格式、输出/答案截断和 HTTP 错误；原生搜索失败回退 Bing；Bing RSS 解析、HTML 解析、实体解码、转义标签与 `<` 比较的区分；
 - `__ask`：问题和选项校验（空问题、超过 8 个选项、超长文本）、结束回合、问题写入历史、编号回答解析、网页 `question` 事件和 `/api/status.question`；
 - `__http`：公共/私有 IPv4、DNS 解析结果、端口和明文 HTTP 限制、URL 内嵌凭据、请求头注入、重定向逐跳校验、文本截断、二进制拒绝、下载大小和工作区写入；
+- `__time` 与自动校时：RTC UTC 到固定时区偏移的日期换算（跨日/跨月/跨年/闰日、负偏移、边界钳制）、无效 RTC 标记、`__time` 原生/文本协议、NTP 成功后按间隔刷新、失败 60 秒重试、启动联网后自动同步；
 - 自动模式提问守卫：解释中检测到面向用户的提问且同时有 python 代码块时，代码不执行并走协议纠正；示例/片段应使用 text 代码块的提示；中英文检测和误报边界；
 - API 重试：429/5xx/网络错误的可重试分类、401/证书错误不重试、指数退避与 `Retry-After` 上限、压缩请求重试；
 - 会话头：`x-opencode-session` 的稳定性、`/clear` 轮换和每次模型请求的携带；
@@ -81,12 +82,15 @@ python tools/check.py --quick
 python tools/check.py --tests tests.test_agent tests.test_conversation -k ask
 ```
 
-`tools/check.py` 等价于 `compileall device tools tests` 加对应的 `unittest` 命令，不访问设备。当前有 519 项主机测试。主机依赖和与固件 `_mpy` 匹配的 `mpy-cross`：
+`tools/check.py` 等价于 `compileall device tools tests` 加对应的 `unittest` 命令，不访问设备。当前有 545 项主机测试。主机依赖和与固件 `_mpy` 匹配的 `mpy-cross` 应安装在虚拟环境中：
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
 ```
+
+Linux/macOS 使用 `source .venv/bin/activate`。后续命令应在已激活的同一终端中执行；`tools/deploy.py` 通过当前 `sys.executable -m mpremote` 调用设备工具，避免混用系统 Python。
 
 参考固件：
 

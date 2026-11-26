@@ -9,6 +9,8 @@ DEFAULTS = {
     "ca_file": "/ca.pem",
     "tls_verify": True,
     "ntp_server": "pool.ntp.org",
+    "ntp_sync_interval_s": 21600,
+    "timezone_offset_minutes": 480,
     "max_tokens": 32768,
     "truncation_retry_max_tokens": 49152,
     "temperature": 0.2,

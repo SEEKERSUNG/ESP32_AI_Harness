@@ -295,6 +295,7 @@ class ApplicationTickTests(unittest.TestCase):
                 return {}
 
         app.network = Network()
+        app.time_sync = mock.Mock()
         return app, calls
 
     def test_tick_connects_pending_wifi_then_runs_maintenance(self):
@@ -392,7 +393,50 @@ class QuietSupervisor:
         pass
 
 
+class BootTimeNetwork:
+    def __init__(self):
+        self.feed = None
+        self.connected = False
+        self.sync_calls = []
+
+    def connect(self, ssid, password, timeout=25, force=False, grace_ms=None):
+        self.connected = True
+        return {"sta_ip": "192.168.1.50", "sta_connected": True}
+
+    def status(self):
+        return {"sta_connected": self.connected, "connected": self.connected}
+
+    def time_sync_age_ms(self):
+        return None
+
+    def sync_time(self, server="pool.ntp.org", force=False):
+        self.sync_calls.append((server, force))
+        return True
+
+
 class ApplicationConstructionTests(unittest.TestCase):
+    def test_boot_network_synchronizes_time_after_connect(self):
+        network = BootTimeNetwork()
+        with tempfile.TemporaryDirectory() as root:
+            with mock.patch("harness.console.SerialUI",
+                            lambda _feed: FakeSerial()):
+                config = MutableConfig(
+                    web_enabled=True,
+                    ntp_server="time.example.test",
+                    timezone_offset_minutes=480,
+                )
+                config.secrets["web_password_hash"] = "hash"
+                config.secrets["web_password_salt"] = "salt"
+                app = Application(
+                    root=root,
+                    config=config,
+                    network=network,
+                    supervisor=QuietSupervisor(),
+                )
+            app.boot_network()
+        self.assertEqual([("time.example.test", False)], network.sync_calls)
+        self.assertTrue(app._network_ready)
+
     def test_constructor_initializes_background_store(self):
         with tempfile.TemporaryDirectory() as root:
             with mock.patch("harness.console.SerialUI",

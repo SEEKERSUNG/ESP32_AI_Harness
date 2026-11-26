@@ -129,6 +129,8 @@ class Network:
                  auth_mode=None, clock=None):
         self.feed = feed or (lambda: None)
         self._time_synced = False
+        self._time_synced_ms = None
+        self._time_syncing = False
         self._wlan_factory = wlan_factory
         self._unique_id = unique_id
         self._auth_mode = auth_mode
@@ -557,26 +559,40 @@ class Network:
                     return self.status()
         return status
 
-    def sync_time(self, server="pool.ntp.org"):
-        if self._time_synced:
-            return
+    def sync_time(self, server="pool.ntp.org", force=False):
+        if self._time_synced and not force:
+            return False
+        if self._time_syncing:
+            return False
+        self._time_syncing = True
         import ntptime
         try:
             ntptime.host = server
         except AttributeError:
             pass
         last_error = None
-        for _ in range(5):
-            try:
-                ntptime.settime()
-                self._time_synced = True
-                self.feed()
-                return
-            except Exception as exc:
-                last_error = exc
-                self.feed()
-                _sleep_ms(300)
-        raise RuntimeError("NTP synchronization failed: %s" % last_error)
+        try:
+            for _ in range(5):
+                try:
+                    ntptime.settime()
+                    self._time_synced = True
+                    self._time_synced_ms = self._clock()
+                    self._status_cache = dict(self._status_cache)
+                    self._status_cache["time_synced"] = True
+                    self.feed()
+                    return True
+                except Exception as exc:
+                    last_error = exc
+                    self.feed()
+                    _sleep_ms(300)
+            raise RuntimeError("NTP synchronization failed: %s" % last_error)
+        finally:
+            self._time_syncing = False
+
+    def time_sync_age_ms(self):
+        if not self._time_synced or self._time_synced_ms is None:
+            return None
+        return max(0, ticks_diff(self._clock(), self._time_synced_ms))
 
     @staticmethod
     def time_is_valid():

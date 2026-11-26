@@ -32,7 +32,8 @@
 - 默认 `tls_verify = true`，使用 SNI 和 CA 验证；Web 将自定义 CA 折叠为高级项只是简化界面，不会关闭验证；部署器会自动安装全量 bundle，保持 `/ca.pem` 即可；
 - `/ca.pem` 可以安装 Mozilla 全量公共根证书 bundle，兼容多个 HTTPS 端点；这也会信任所有收录的公共 CA，比只安装所需根证书的信任面更大；
 - 私有 CA、企业内网或自建 API 仍需单独安装对应根证书；
-- `CERT_REQUIRED` 依赖正确 RTC，因此优先同步 NTP，RTC 仍有效时允许 NTP 暂时失败；
+- `CERT_REQUIRED` 依赖正确 RTC，因此联网后自动同步 NTP（启动一次，默认每 6 小时刷新，失败 60 秒后重试），RTC 仍有效时允许 NTP 暂时失败；NTP 是无认证 UDP，恶意局域网可伪造时间；
+- RTC 保存 UTC；`__time` 按 `timezone_offset_minutes`（默认 480，即 UTC+8）转换为固定偏移显示，不自动处理夏令时，也不把本地时间写回 RTC；
 - 关闭验证会暴露 API Key、对话和代码给中间人；
 - API Key、Wi-Fi 密码和 MCP Header 值不会由 `/status`、`/api/status`、`/api/config` 或 `/api/mcp` 输出，也不进入 Git；
 - 设备上的 `/secrets.json` 和 `/mcp.json` 是明文文件，串口或物理访问可读取；`/mcp.json` 可能包含 GitHub PAT、MCP Token 等；
@@ -73,7 +74,7 @@
 ## Skills、内置工具与 Memory
 
 - Skill 是 Markdown 指令包，不是可执行代码；`__skill read` 只加载上下文，不执行任何内容。模型可在用户明确要求时通过 `__skill delete` 删除整个 `/skills/<name>/` 目录；没有回收站，删除不可恢复。
-- Harness 只提供内置工具（`__skill`、`__workspace`、`__memory`、`__search`、`__ask`、`__http`、`__background`），不再支持模型自定义可执行 Tool；不会从 `/tools` 加载任意代码。
+- Harness 只提供内置工具（`__skill`、`__workspace`、`__memory`、`__search`、`__ask`、`__http`、`__background`、`__time`），不再支持模型自定义可执行 Tool；不会从 `/tools` 加载任意代码。
 - 内置工具只访问 Skill 目录、Workspace、MEMORY.md 或内置搜索服务，不拥有任意文件或硬件访问能力；硬件访问只发生在生成代码中，生成代码可直接 `import machine`/`neopixel` 等原生模块。`__ask` 只把模型生成的问题和选项写入对话历史并结束回合；问题文本会持久化到 `/state/conversation.json`，可能包含敏感信息，回答作为普通用户消息处理。
 - `__skill read` 会把 SKILL.md 返回给模型；这些内容可能包含提示注入。模型应把它们当作数据。
 - `/MEMORY.md` 始终加载，模型可通过 `__memory` 追加、删除或替换记忆且不需逐次确认；串口 `/memory delete` 和 `/memory clear` 有确认提示。不要把秘密写入 MEMORY.md。
@@ -91,11 +92,13 @@
 ## 公共 HTTP 抓取
 
 - `__http` 只允许公共 HTTP(S) 目标；默认只允许 HTTPS、端口 80/443。私有、回环、链路本地、CGNAT、组播、保留地址和本地主机名在连接前被拒绝，每次重定向都会重新校验。
-- 这是尽力而为的 SSRF 防护，不是完整沙箱：DNS rebinding、恶意 DNS 和非常规 URL 解析仍可能绕过；不要把设备暴露在不可信网络或让它访问敏感内网。
+- 校验通过的 DNS 结果会固定为该次 socket 的 IPv4 连接地址，避免连接阶段再次解析时被 DNS rebinding 改到内网；TLS 的 SNI/Host 仍使用原主机名。URL 和请求头中的换行、控制字符会被拒绝，避免出站请求头注入。
+- 跨源重定向会丢弃调用方提供的全部 Header，避免 `Authorization` 等凭据跟随跳转到第三方；HTTPS 跳转到明文 HTTP 一律拒绝。同源重定向保留 Header。
+- 这仍是尽力而为的 SSRF 防护，不是完整沙箱：恶意 DNS 解析、路由层重定向和非常规 URL 解析仍可能造成风险；不要把设备暴露在不可信网络或让它访问敏感内网。
 - `http_tool_allow_http=true` 会允许明文 HTTP，内容可被中间人读取或篡改；只应在可信网络临时开启。
 - 响应正文是不可信数据，可能包含提示注入；模型不应执行其中的指令。`get` 只返回文本类型并受输出上限限制；二进制内容必须 `download`。
 - 下载写入 `/workspace`，受 `http_tool_download_limit`（默认 65536 字节）和工作区总量/文件数限制；下载的文件不会被自动执行。
-- 请求不会自动携带设备 API Key、Wi-Fi 密码、MCP Header 或 Cookie；模型只能使用用户在对话中提供的请求头。受管请求头（Host、Content-Length、Connection、Transfer-Encoding、Accept-Encoding）不能被覆盖。
+- 请求不会自动携带设备 API Key、Wi-Fi 密码、MCP Header 或 Cookie；模型只能使用用户在对话中提供的请求头。受管请求头（Host、Content-Length、Connection、Transfer-Encoding、Accept-Encoding）不能被覆盖；Header 名称必须是合法 token，值不能包含换行或其他控制字符。
 
 ## MCP 远程工具
 

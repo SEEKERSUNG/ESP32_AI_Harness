@@ -643,6 +643,11 @@ class WebApp:
             "search_provider_fallback": _search_status(
                 self.app, "fallback", False),
             "search_bing_url": self.app.config.get("search_bing_url", ""),
+            "ntp_server": self.app.config.get("ntp_server", "pool.ntp.org"),
+            "ntp_sync_interval_s": self.app.config.get(
+                "ntp_sync_interval_s", 21600),
+            "timezone_offset_minutes": self.app.config.get(
+                "timezone_offset_minutes", 480),
             "http_tool_enabled": bool(
                 self.app.config.get("http_tool_enabled", True)),
             "http_tool_allow_http": bool(
@@ -984,6 +989,8 @@ class WebApp:
                     if key in ("base_url", "search_bing_url") and value and not (
                             value.startswith("http://") or value.startswith("https://")):
                         raise _error("%s must start with http:// or https://" % key)
+                    if key == "ntp_server" and not value:
+                        raise _error("ntp_server cannot be empty", 400, "invalid")
                     if key == "ca_file" and value:
                         if not value.startswith("/") or not value.endswith(".pem") or ".." in value:
                             raise _error("CA path must be an absolute .pem path", 400, "invalid")
@@ -1035,6 +1042,8 @@ class WebApp:
                 ("api_retry_max_ms", 0, 300000),
                 ("api_retry_after_max_ms", 0, 3600000),
                 ("api_retry_jitter_pct", 0, 100),
+                ("ntp_sync_interval_s", 0, 86400),
+                ("timezone_offset_minutes", -720, 840),
             )
             for key, minimum, maximum in timeout_fields:
                 if key in body:
