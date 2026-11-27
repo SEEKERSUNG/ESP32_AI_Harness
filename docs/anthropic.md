@@ -7,7 +7,7 @@ api_provider = "openai"      # OpenAI 兼容 chat/completions（默认）
 api_provider = "anthropic"   # Anthropic Messages /v1/messages
 ```
 
-切换协议不会自动替换已保存的 API Key；请同时确认 Key 与端点属于同一供应商。切换时如果 Base URL 仍是已知默认值（OpenAI、DeepSeek、Anthropic），Harness 会换成新协议的默认地址；自定义代理地址保持不变。
+切换协议不会自动替换已保存的 API Key；请同时确认 Key 与端点属于同一供应商。切换时如果 Base URL 仍是已知默认值（OpenAI、DeepSeek、Anthropic），Harness 会换成新协议的默认地址；自定义代理地址保持不变。OpenAI 兼容路径见 [OpenAI 兼容 API](openai.md)。
 
 ## 请求映射
 

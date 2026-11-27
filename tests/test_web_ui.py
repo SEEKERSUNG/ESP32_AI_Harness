@@ -74,6 +74,11 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("function stopBackground", APP_JS)
         self.assertIn("/api/background/stop", APP_JS)
         self.assertIn("停止全部后台程序", APP_JS)
+        self.assertIn("停止并丢弃 #", APP_JS)
+        self.assertIn("停止并丢弃全部", APP_JS)
+        self.assertIn("discard_on_finish", APP_JS)
+        self.assertIn("bg.discard_on_finish?'d'", APP_JS)
+        self.assertIn("body.discard=true", APP_JS.replace(" ", ""))
         self.assertIn("stop_requested", APP_JS)
         self.assertIn("status.turn_busy", APP_JS)
         self.assertIn("前台运行", APP_JS)
@@ -88,6 +93,44 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("后台运行", APP_JS)
         self.assertIn(".background-card", APP_CSS)
         self.assertIn(".background-job", APP_CSS)
+
+    def test_tasks_tab_owns_background_jobs_and_schedules(self):
+        self.assertIn('id="tasksPane"', INDEX_HTML)
+        self.assertIn('data-tab="tasks"', INDEX_HTML)
+        self.assertIn('id="backgroundList"', INDEX_HTML)
+        self.assertIn('id="scheduleList"', INDEX_HTML)
+        self.assertIn('id="scheduleEditor"', INDEX_HTML)
+        for control in (
+            "scheduleName", "scheduleType", "schedulePrompt",
+            "scheduleSource", "scheduleWhen", "scheduleDelay",
+            "scheduleAt", "scheduleEvery", "scheduleDailyAt",
+            "scheduleEnabled", "scheduleSaveBtn", "scheduleCancelBtn",
+        ):
+            self.assertIn('id="%s"' % control, INDEX_HTML)
+        # Background jobs are rendered in the tasks pane, not in the chat log.
+        self.assertIn("$('backgroundList')", APP_JS)
+        self.assertNotIn("card('后台任务", APP_JS)
+        self.assertIn("function syncSchedules", APP_JS)
+        self.assertIn("function renderScheduleRow", APP_JS)
+        self.assertIn("function saveSchedule", APP_JS)
+        self.assertIn("/api/schedules", APP_JS)
+        self.assertIn("status.schedules", APP_JS)
+        self.assertIn("schedule_seq", APP_JS)
+        self.assertIn("busy_source==='schedule'", APP_JS)
+        self.assertIn(".schedule-job", APP_CSS)
+        self.assertIn(".tasks-inner", APP_CSS)
+
+    def test_background_and_scheduled_continuations_start_new_turns(self):
+        # A continuation has no new user bubble but is still a separate agent
+        # message; live rendering and history refresh must both start a turn.
+        self.assertIn("if(data.separate_turn){", APP_JS)
+        self.assertIn("后台任务结果", APP_JS)
+        self.assertIn("Local ESP32 background execution result", APP_JS)
+        self.assertIn("A completed background job starts a new agent turn",
+                      APP_JS)
+        self.assertIn(
+            "The continuation is a separate agent message", APP_JS)
+        self.assertIn("separate_turn", APP_JS)
 
     def test_search_settings_controls(self):
         for control in (
@@ -227,7 +270,7 @@ class WebUiTests(unittest.TestCase):
         self.assertNotIn("$('chatLog').scrollTop", APP_JS)
         self.assertIn(
             "show($('commandsPane'),name==='commands');"
-            "scrollPageBottomSoon();", APP_JS)
+            "show($('tasksPane'),name==='tasks');", APP_JS)
         self.assertIn("autoScrollChat(true)", APP_JS)
         self.assertIn(
             "state.liveUserEl=logMessage('user',text,'user');"

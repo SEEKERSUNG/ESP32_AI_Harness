@@ -40,7 +40,7 @@
 - 上下文回退：真实用户消息识别（旧历史 `Local ...` 观察不可回退）、`count`/绝对 `index` 校验、待执行/问题清空、持久化截断、后台任务运行期间拒绝；
 - 多后台任务：`BackgroundPool` 的 worker 线程、最多并发数/排队、`queued/running/ready/error`、单任务停止/全部停止、编号/备注/耗时/`summary_lines`、结果按 id 提交/丢弃、`background_max_records` 修剪且不丢 ready、多任务持久化与重启后 active→error、降低 `background_max_records` 时保留 ready/只裁剪非 ready、`id@ticks` token 去重、原任务摘要和 `turns` 恢复；前台运行与后台运行模式分离、运行期间允许对话/新代码/前台执行、维护操作 409、待执行项/问题阻止自动继续、`turn_busy` 与 `busy` 分离；AUTO 模式设备主线程自动继续、手动模式保留继续/丢弃、`auto_continue_seq` 网页历史同步、`__background list|status|stop|note|discard` 与 Web 端点；无限超时 `0`/`infinite` 仅后台允许；
 - 执行并发：共享 `ExecutionRuntime` 按线程路由 `time.sleep*`/`print`/嵌套 `__harness_check`，worker 输出隔离、不调用 `os.dupterm`、最后一个执行结束后恢复全局钩子；两个 worker 与前台同时运行；`__harness_check` 嵌套 `exec(..., 独立 globals)` 仍可协作停止；
-- 执行超时：`range`/`while True`/`time.sleep` 插桩、`__harness_check()`、`ExecutionTimeout` 不被 `except Exception` 吞掉、超时观察回传、`timeout=` 开围栏解析/空格与标点兼容/闭合围栏后独立行兼容/首个源码行兼容/说明文字不误读、正整数上限、正小数向上取整而非变成无限；
+- 执行超时：`range`/所有 `while` 条件（含括号、切片、字典、lambda、`:=` 和字符串/注释跳过）/`time.sleep` 插桩、`__harness_check()`、`ExecutionTimeout` 不被 `except Exception` 吞掉、超时观察回传、`timeout=` 开围栏解析/空格与标点兼容/闭合围栏后独立行兼容/首个源码行兼容/说明文字不误读、正整数上限、正小数向上取整而非变成无限；
 - MCP：initialize/session、JSON/SSE、tools/list 分页、tools/call、2026-07-28 `_meta`/Header、404 重初始化、Header 脱敏、只读工具免确认和 auto 确认。
 
 真实硬件测试前核对实际接线、电平和供电；I2C 地址可用 `I2C.scan()` 验证。不要只依据主机 Fake 结果判断真实引脚。
@@ -59,13 +59,13 @@
 - 聊天与执行：auto off 代码卡、auto on 安全代码执行/反馈、无限循环阻止、Skill 永不自动保存、`max_turns`（默认 32）和 `/auto turns` 边界、手动 Run 只反馈一次、客户端断开在步骤间停止；前台/后台 `mode` 分离、多个后台任务并发与排队、`/api/continue {"id"}` 只提交一次、自动继续卡片和回退按钮存在；
 - 线程：`UIRouter` 线程隔离、`Executor.main_runner` 回主线程、worker executor 不回主线程、`Application.run_on_main/pump_main_request`、后台期间允许对话/前台执行但拒绝维护操作、停止单任务/全部任务、共享运行时的全局钩子恢复、协作钩子喂狗与非协作前台代码停止喂狗；
 - 网络：AP 启动/停止、AP 宽限、无管理密码不关 AP、断线开 AP、STA 重试、状态缓存；
-- 目标文件：`tests/test_background.py`、`test_console_ui.py`、`test_executor.py`、`test_web_auth.py`、`test_web_http.py`、`test_web_app.py`、`test_web_ui.py`、`test_network_ap.py`。
+- 目标文件：`tests/test_background.py`、`test_schedule.py`、`test_schedule_tool.py`、`test_console_ui.py`、`test_executor.py`、`test_web_auth.py`、`test_web_http.py`、`test_web_app.py`、`test_web_ui.py`、`test_network_ap.py`。
 
 真实设备测试建议依次验证：`/web`、STA 登录、静态资源、错误密码限速、非交互命令和确认流程、配置脱敏、AP-only 首次设置、`/web reset-password`、网页触发 handoff 和 30 秒死循环复位。多后台任务至少验证两个 worker 同时运行、前台代码与 worker 输出不串线、`/background list|stop ID|note|discard`、无限任务协作停止、队列升槽，以及退出后 `builtins.print`/`__harness_check`/`time` 已恢复。不要默认发送真实 LLM 请求；它会使用用户凭据并计费。真实 LLM 压力测试需要用户明确授权，并让串口与网页测试分阶段进行、不要同时占用设备；建议先完成串口长对话，再重置并通过网页 API/浏览器做独立的长对话、取消和标签切换测试。免费或排队严重的网关可能对 600 字以上的提示连续返回响应头超时；测试时保持每条约 120–200 字、要求 500 字以上回答，并适当提高 `api_retries`、降低 thinking，测完恢复原配置。
 
 MicroPython 兼容注意：不要调用 `Exception.__init__(self, message)`，ESP32 移植会报 `AttributeError: type object 'Exception' has no attribute '__init__'`。自定义异常只需定义 `__init__` 并设置属性（必要时覆盖 `__str__`）。Web 线程使用 32 KB 栈，后台 worker 默认也用 32 KB 栈；创建 worker 前会设置 `_thread.stack_size`，测试时务必在真实板验证两个任务同时运行和内存余量。`socket.getsockname()` 在 MicroPython 不可用，固定端口或捕获 `AttributeError`。`str.isalnum()` 在 1.29 不可用，使用显式字符范围。`network.STAT_*` 在 1.29 中是 `STAT_NO_AP_FOUND=201`、`STAT_WRONG_PASSWORD=202`、`STAT_CONNECTING=1001`、`STAT_GOT_IP=1010` 等，不是 0–5；ESP-IDF 在新连接扫描期间可能沿用上一次的断开原因，判定失败前要给驱动留出稳定窗口。MicroPython 的内建模块不一定会出现在 `sys.modules`，测试全局 `time` 恢复时应允许条目缺失。
 
-执行器相关：MicroPython 对 `for i in range(...)` 使用编译期内建 `range`，覆盖 globals 无效；`executor.instrument_source()` 会跳过字符串/注释并把 `range(` 改写为 `__harness_range(`，同时把 `while True:` 改为 `while __harness_check() or True:`。MicroPython 内建模块通常不允许 `setattr`，因此 `time` 代理通过临时替换 `sys.modules["time"]`/`["utime"]` 实现，执行结束必须恢复。修改这些逻辑时同时在真实板上验证 `DEVICE_SMOKE_OK` 和超时脚本，不要只依赖 CPython 测试。
+执行器相关：MicroPython 对 `for i in range(...)` 使用编译期内建 `range`，覆盖 globals 无效；`executor.instrument_source()` 会跳过字符串/注释并把 `range(` 改写为 `__harness_range(`，同时把所有 `while <条件>:` 改写为 `while __harness_check() or (<条件>):`（`while True:` 保持更短的 `or True` 形式），扫描时跟踪括号、字符串、注释和 `:=`。MicroPython 内建模块通常不允许 `setattr`，因此 `time` 代理通过临时替换 `sys.modules["time"]`/`["utime"]` 实现，执行结束必须恢复。修改这些逻辑时同时在真实板上验证 `DEVICE_SMOKE_OK` 和超时脚本，不要只依赖 CPython 测试。
 
 ## 每次修改后的检查
 
@@ -82,7 +82,7 @@ python tools/check.py --quick
 python tools/check.py --tests tests.test_agent tests.test_conversation -k ask
 ```
 
-`tools/check.py` 等价于 `compileall device tools tests` 加对应的 `unittest` 命令，不访问设备。当前有 545 项主机测试。主机依赖和与固件 `_mpy` 匹配的 `mpy-cross` 应安装在虚拟环境中：
+`tools/check.py` 等价于 `compileall device tools tests` 加对应的 `unittest` 命令，不访问设备。当前有 586 项主机测试。定时任务测试要覆盖本地时间与 UTC 换算、跨日/每日排期、间隔重复、失败重试、重启后恢复和 RTC 无效跳过；`test_console_ui` 验证提示词任务和代码任务都只在主线程空闲时启动。主机依赖和与固件 `_mpy` 匹配的 `mpy-cross` 应安装在虚拟环境中：
 
 ```powershell
 python -m venv .venv

@@ -18,6 +18,7 @@
 
 - [Skills](skills.md)：Markdown 指令包和渐进式加载。
 - [MEMORY.md](memory.md)：始终加载的项目上下文。
+- [OpenAI 兼容 API](openai.md)：Chat Completions 映射、thinking、流式工具调用和限制。
 - [Anthropic Messages API](anthropic.md)：协议映射、thinking/effort、Header 和限制。
 - [MCP 远程工具](mcp.md)：Streamable HTTP、服务器配置、确认和限制。
 - [Workspace 工作区](workspace.md)：持久资料和临时文件。

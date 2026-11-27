@@ -130,8 +130,9 @@ class ExecutionResult:
 class DeadlineRange:
     """A range-compatible iterator that checks the harness deadline.
 
-    Replacing range covers the most common long-running generated loop without
-    rewriting source. while loops remain cooperative via __harness_check().
+    Replacing range covers counting loops; ``instrument_source`` also wraps
+    general ``while`` conditions with ``__harness_check()`` so event loops,
+    polling loops and other unbounded loops stay cooperative too.
     """
 
     def __init__(self, check, *args):
@@ -201,12 +202,82 @@ def _is_true_while_condition(source, index):
     return False
 
 
+def _find_while_colon(source, index):
+    """Return the index of the ':' that ends a while condition, or None.
+
+    Tracks strings, comments and bracket nesting so a colon in a slice, dict,
+    lambda or string does not terminate the header early. A newline at bracket
+    depth zero before the colon means the header is malformed or uses a form
+    this scanner does not handle; callers then leave the source untouched.
+    """
+    length = len(source)
+    cursor = index
+    depth = 0
+    quote = None
+    triple = False
+    while cursor < length:
+        char = source[cursor]
+        if quote is not None:
+            if char == "\\" and cursor + 1 < length:
+                cursor += 2
+                continue
+            if triple:
+                if source.startswith(quote * 3, cursor):
+                    cursor += 3
+                    quote = None
+                    triple = False
+                    continue
+            elif char == quote:
+                quote = None
+            cursor += 1
+            continue
+        if char in ("'", '"'):
+            if source.startswith(char * 3, cursor):
+                quote = char
+                triple = True
+                cursor += 3
+                continue
+            quote = char
+            triple = False
+            cursor += 1
+            continue
+        if char == "#":
+            end = source.find("\n", cursor)
+            if end < 0:
+                return None
+            cursor = end
+            continue
+        if char == "\\" and cursor + 1 < length:
+            # Explicit line continuation inside a while header.
+            cursor += 2
+            continue
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            if depth > 0:
+                depth -= 1
+        elif char == ":" and depth == 0:
+            if cursor + 1 < length and source[cursor + 1] == "=":
+                # Walrus assignment (while chunk := read():).
+                cursor += 2
+                continue
+            return cursor
+        elif char in ("\n", "\r") and depth == 0:
+            return None
+        cursor += 1
+    return None
+
+
 def instrument_source(source):
-    """Rewrite range() calls to the deadline-aware wrapper.
+    """Rewrite range() and while conditions to cooperative checks.
 
     MicroPython compiles ``for i in range(...)`` against the builtin range even
-    when a globals dict shadows it, so a globals override is not enough. The
-    scanner skips strings and comments and leaves attribute/method names alone.
+    when a globals dict shadows it, so a globals override is not enough. Every
+    ``while <condition>:`` is rewritten to
+    ``while __harness_check() or (<condition>):``; the check returns None
+    normally, so the original truth value is preserved while the deadline,
+    stop request and watchdog feed still run each iteration. The scanner skips
+    strings and comments and leaves attribute/method names alone.
     """
     out = []
     index = 0
@@ -264,7 +335,7 @@ def instrument_source(source):
                     continue
         if source.startswith("while", index):
             previous = source[index - 1] if index > 0 else ""
-            if not _is_identifier_char(previous):
+            if not _is_identifier_char(previous) and previous != ".":
                 cursor = index + 5
                 if cursor < length and source[cursor] in " \t(":
                     cursor = _skip_spaces(source, cursor)
@@ -272,6 +343,16 @@ def instrument_source(source):
                         out.append("while __harness_check() or ")
                         index = cursor
                         continue
+                    colon = _find_while_colon(source, cursor)
+                    if colon is not None:
+                        condition = source[cursor:colon]
+                        if not condition.lstrip().startswith(
+                                "__harness_check("):
+                            out.append("while __harness_check() or (")
+                            out.append(condition)
+                            out.append(")")
+                            index = colon
+                            continue
         out.append(char)
         index += 1
     return "".join(out)

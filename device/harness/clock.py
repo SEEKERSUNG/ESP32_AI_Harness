@@ -56,6 +56,108 @@ def timezone_offset_minutes(config):
     return max(MIN_OFFSET_MINUTES, min(value, MAX_OFFSET_MINUTES))
 
 
+def epoch_from_utc(year, month, day, hour=0, minute=0, second=0):
+    """UTC epoch seconds for a civil date/time (no timezone conversion)."""
+    return (_days_from_civil(year, month, day) * 86400
+            + hour * 3600 + minute * 60 + second)
+
+
+def utc_fields_from_epoch(value):
+    """Inverse of epoch_from_utc; returns (year, month, day, h, m, s)."""
+    days = value // 86400
+    remainder = value - days * 86400
+    year, month, day = _civil_from_days(days)
+    hour = remainder // 3600
+    remainder -= hour * 3600
+    minute = remainder // 60
+    second = remainder - minute * 60
+    return year, month, day, hour, minute, second
+
+
+def local_epoch(epoch, config):
+    """Convert a UTC epoch to the configured fixed-offset local epoch."""
+    return epoch + timezone_offset_minutes(config) * 60
+
+
+def utc_epoch_from_local(value, config):
+    """Convert a fixed-offset local epoch back to UTC epoch seconds."""
+    return value - timezone_offset_minutes(config) * 60
+
+
+def local_fields_from_epoch(epoch, config):
+    return utc_fields_from_epoch(local_epoch(epoch, config))
+
+
+def format_local_input(epoch, config):
+    """'YYYY-MM-DD HH:MM' in the configured offset, for editable forms."""
+    fields = local_fields_from_epoch(epoch, config)
+    return "%04d-%02d-%02d %02d:%02d" % (
+        fields[0], fields[1], fields[2], fields[3], fields[4])
+
+
+def format_local_epoch(epoch, config, include_weekday=False):
+    """Format a UTC epoch in the configured local offset."""
+    fields = local_fields_from_epoch(epoch, config)
+    offset = timezone_offset_minutes(config)
+    text = "%04d-%02d-%02d %02d:%02d:%02d %s" % (
+        fields[0], fields[1], fields[2],
+        fields[3], fields[4], fields[5], _format_offset(offset),
+    )
+    if include_weekday:
+        days = local_epoch(epoch, config) // 86400
+        text += " (%s)" % WEEKDAY_NAMES[(days + 3) % 7]
+    return text
+
+
+def next_daily_epoch(now_epoch, hour, minute, config):
+    """Next local HH:MM strictly after now, as UTC epoch seconds."""
+    local_now = local_epoch(now_epoch, config)
+    days = local_now // 86400
+    candidate = days * 86400 + hour * 3600 + minute * 60
+    if candidate <= local_now:
+        candidate += 86400
+    return utc_epoch_from_local(candidate, config)
+
+
+def parse_local_datetime(text, config):
+    """Parse local 'YYYY-MM-DD HH:MM[:SS]' and return a UTC epoch or None."""
+    value = str(text or "").strip().replace("T", " ")
+    if not value:
+        return None
+    parts = value.split()
+    if len(parts) > 2:
+        return None
+    date_parts = parts[0].replace("/", "-").split("-")
+    if len(date_parts) != 3:
+        return None
+    try:
+        year = int(date_parts[0])
+        month = int(date_parts[1])
+        day = int(date_parts[2])
+    except (TypeError, ValueError):
+        return None
+    if not _valid_civil_date(year, month, day):
+        return None
+    hour = 0
+    minute = 0
+    second = 0
+    if len(parts) == 2:
+        time_parts = parts[1].split(":")
+        if len(time_parts) < 2 or len(time_parts) > 3:
+            return None
+        try:
+            hour = int(time_parts[0])
+            minute = int(time_parts[1])
+            if len(time_parts) == 3:
+                second = int(time_parts[2])
+        except (TypeError, ValueError):
+            return None
+    if not (0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59):
+        return None
+    local_value = epoch_from_utc(year, month, day, hour, minute, second)
+    return utc_epoch_from_local(local_value, config)
+
+
 def _days_from_civil(year, month, day):
     """Days since 1970-01-01 for a proleptic Gregorian date."""
     year -= 1 if month <= 2 else 0
@@ -65,6 +167,13 @@ def _days_from_civil(year, month, day):
     doy = (153 * shifted_month + 2) // 5 + day - 1
     doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
     return era * 146097 + doe - 719468
+
+
+def _valid_civil_date(year, month, day):
+    if not (1970 <= year <= 2200 and 1 <= month <= 12 and 1 <= day <= 31):
+        return False
+    return _civil_from_days(
+        _days_from_civil(year, month, day)) == (year, month, day)
 
 
 def _civil_from_days(days):
@@ -111,6 +220,32 @@ def read_rtc():
     except Exception:
         return None
     return _parse_fields(value)
+
+
+def write_rtc(epoch):
+    """Write a UTC epoch to machine.RTC(), returning its parsed fields.
+
+    The configured local offset is not involved: the RTC always stores UTC.
+    MicroPython expects (year, month, day, weekday, hour, minute, second,
+    microsecond); the ESP32 ignores weekday, but Monday=0 is passed anyway.
+    """
+    try:
+        value = int(epoch)
+    except (TypeError, ValueError):
+        raise ClockError("epoch must be an integer")
+    fields = utc_fields_from_epoch(value)
+    if not (2025 <= fields[0] <= 2200):
+        raise ClockError("RTC year must be between 2025 and 2200")
+    weekday = (value // 86400 + 3) % 7
+    try:
+        import machine
+        machine.RTC().datetime((
+            fields[0], fields[1], fields[2], weekday,
+            fields[3], fields[4], fields[5], 0,
+        ))
+    except Exception as exc:
+        raise ClockError("Could not set RTC: %s" % exc)
+    return fields
 
 
 def _system_utc():

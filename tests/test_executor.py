@@ -241,14 +241,66 @@ class ExecutorTests(unittest.TestCase):
             "while __harness_check() or (1):",
             instrument_source("while (1):\n    pass"),
         )
-        self.assertNotIn(
-            "__harness_check",
+        self.assertIn(
+            "while __harness_check() or (True and ready):",
             instrument_source("while True and ready:\n    pass"),
         )
         self.assertNotIn(
             "__harness_check",
             instrument_source("print('while True:')"),
         )
+
+    def test_instrument_source_wraps_general_while_conditions(self):
+        result = instrument_source("while flag:\n    pass")
+        self.assertIn("while __harness_check() or (flag):", result)
+        result = instrument_source(
+            "while time.ticks_diff(time.ticks_ms(), started) < 100:\n"
+            "    pass")
+        self.assertIn(
+            "while __harness_check() or "
+            "(time.ticks_diff(time.ticks_ms(), started) < 100):", result)
+        # Nested brackets, slices, dict literals and lambdas keep their colon.
+        for source, expected in (
+            ("while buf[i:j]:\n    pass",
+             "while __harness_check() or (buf[i:j]):"),
+            ("while {'x': 1}:\n    pass",
+             "while __harness_check() or ({'x': 1}):"),
+            ("while (lambda: 1)():\n    pass",
+             "while __harness_check() or ((lambda: 1)()):"),
+            ("while (a and\n       b):\n    pass",
+             "while __harness_check() or ((a and\n       b)):"),
+            ("while chunk := read():\n    pass",
+             "while __harness_check() or (chunk := read()):"),
+        ):
+            self.assertIn(expected, instrument_source(source))
+        # A while already using the explicit check is not double-wrapped.
+        source = "while __harness_check() or done:\n    pass"
+        self.assertEqual(source, instrument_source(source))
+        # Strings and comments are untouched.
+        self.assertNotIn(
+            "__harness_check",
+            instrument_source("print('while x:')\n# while x:\n"))
+        self.assertNotIn(
+            "__harness_check", instrument_source("mywhile = 1\n"))
+
+    def test_general_while_loop_is_cooperative_without_explicit_check(self):
+        result = Executor(DummyBoard(), timeout_s=1).execute(
+            "import time\n"
+            "started = time.monotonic()\n"
+            "while time.monotonic() - started < 30:\n"
+            "    pass\n")
+        self.assertTrue(result.timed_out)
+        self.assertIn("ExecutionTimeout", result.error)
+
+    def test_general_while_loop_still_exits_normally(self):
+        result = Executor(DummyBoard(), timeout_s=5).execute(
+            "i = 0\n"
+            "while i < 3:\n"
+            "    print(i)\n"
+            "    i += 1\n")
+        self.assertTrue(result.ok, result.error)
+        self.assertIn("0", result.output)
+        self.assertIn("2", result.output)
 
     def test_true_while_times_out(self):
         result = Executor(DummyBoard(), timeout_s=1).execute(

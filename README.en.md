@@ -34,7 +34,7 @@ A local MicroPython agent harness that runs entirely on an **ESP32-S3 N16R8 (16 
 - **Review before execution** — generated Python is shown, confirmed and only then executed. Auto-run is an explicit opt-in.
 - **Search follows the model API** — OpenAI-compatible and Anthropic Messages endpoints are supported. In AUTO mode, native provider search is selected automatically; endpoints without server-side search use keyless Bing.
 - **Native MicroPython hardware access** — generated code imports `machine`, `neopixel`, `framebuf` and other standard modules directly. There is no global `api` object, peripheral allowlist or `/peripherals` setup step.
-- **Full control surface** — serial keeps every capability; the web console covers everyday chat, configuration, history and background jobs.
+- **Full control surface** — serial keeps every capability; the web console covers everyday chat, configuration, history, and a Tasks page for background and scheduled jobs.
 
 ## Features
 
@@ -48,18 +48,19 @@ A local MicroPython agent harness that runs entirely on an **ESP32-S3 N16R8 (16 
 **Models and tools**
 
 - **Two API protocols with native tool calling** — choose OpenAI-compatible (`chat/completions`) or Anthropic Messages (`/v1/messages`) in setup, `/model` or the web UI. Built-in tools are sent through native function calling (OpenAI `tools` / Anthropic `input_schema`), with an automatic fallback to a textual `tool` block when an endpoint rejects native tools.
-- **Built-in tools** — `__skill`, `__workspace`, `__memory`, `__search`, `__ask`, `__http`, `__background`, `__time`. Model-defined executable tools are no longer loaded.
+- **Built-in tools** — `__skill`, `__workspace`, `__memory`, `__search`, `__ask`, `__http`, `__background`, `__time`, `__schedule`. Model-defined executable tools are no longer loaded.
 - **Skills and memory** — skills are Markdown `SKILL.md` instruction packages and are never executed. `MEMORY.md` is always loaded and supports read, append, delete and replace.
 - **Public HTTP fetching** — `__http` supports GET/HEAD for public HTTPS pages, JSON APIs and small downloads. Private, loopback, link-local, CGNAT and reserved addresses are rejected before connecting and again on every redirect; the validated DNS address is pinned for the actual connection, and caller headers are dropped on cross-origin redirects.
 - **Model questions** — `__ask` lets the model submit a question with up to eight options. The serial console prints numbered options; the web UI renders a question card. The answer is sent as the next user message.
-- **Automatic time sync and time tool** — after Wi-Fi connects the harness synchronizes the RTC over NTP, refreshes it every six hours by default and again after a reconnect once due. `__time` reads the board RTC and returns both local time (configurable fixed UTC offset, default UTC+8) and UTC, so the model can answer time/date questions directly.
+- **Automatic time sync and time tool** — after Wi-Fi connects the harness synchronizes the RTC over NTP, refreshes it every six hours by default and again after a reconnect once due. `__time` reads the board RTC and returns both local time (configurable fixed UTC offset, default UTC+8) and UTC, so the model can answer time/date questions directly. On an explicit user request, `__time action=set` writes the UTC clock (local input is converted first) and `action=timezone` changes the display offset.
 - **Remote MCP tools** — Streamable HTTP and stateless protocols, `tools/list`, `tools/call`, pagination, JSON/SSE responses and static headers. Non-read-only tools require confirmation by default.
 
 **Execution and hardware**
 
 - **Confirmation-gated execution** — generated Python is compiled and executed on the device after confirmation. Optional auto-run and auto-feedback are bounded by `max_turns` (default 32).
-- **Cooperative timeouts** — the default execution timeout is 20 seconds. `range()`, `time.sleep()`, `while True` and explicit `__harness_check()` stop at the deadline or a stop request and return `status=timeout`/`cancelled`; an ordinary timeout does not reboot the board.
-- **Multiple background jobs** — prefer foreground execution for short programs. Long-running work can use dedicated worker threads (four by default) while the serial main thread keeps handling chat and web requests. Stop is cooperative; blocking C/SPI calls still wait for the watchdog.
+- **Cooperative timeouts** — the default execution timeout is 20 seconds. `range()`, every `while` condition, `time.sleep()` and explicit `__harness_check()` stop at the deadline or a stop request and return `status=timeout`/`cancelled`; an ordinary timeout does not reboot the board.
+- **Multiple background jobs** — prefer foreground execution for short programs. Long-running work can use dedicated worker threads (four by default) while the serial main thread keeps handling chat and web requests. Stop is cooperative; blocking C/SPI calls still wait for the watchdog. Background jobs are rendered on the web Tasks page instead of being inserted into the chat log.
+- **Scheduled tasks** — one-time, fixed-interval or daily local-time execution. A prompt task starts an agent turn when due; a code task starts a background job. The model manages them with `__schedule` (create, edit, delete, enable/disable, run now). AI creation, editing, enabling or immediate running of a code task requires AUTO; the web form is confirmed by the administrator. Tasks persist in `/state/schedules.json`, run from the main-thread idle hook when the RTC is valid, and retry failures three times.
 - **Native hardware access** — generated code uses MicroPython's `machine` (`Pin`, `SPI`, `I2C`, `UART`, `PWM`, `ADC`, `TouchPad`, `RTC`, `time_pulse_us`), `neopixel`, `framebuf`, `esp` and `esp32` directly. There is no `api` object, pin allowlist or `/peripherals` command. Reserved pins (flash/PSRAM, USB, console UART, strapping) must still be avoided according to the wiring instructions.
 
 **Reliability**
@@ -258,9 +259,11 @@ After the model returns code:
 /continue 1 # commit job 1's result and continue the conversation
 ```
 
-Execution results are fed back to the model according to configuration; subsequent fixes still require `/run` confirmation. Auto-feedback turns are bounded by `max_turns` (default 32; change with `/auto turns N` or in the web settings). The default execution timeout is 20 seconds. The model can put `timeout=45` on the same line as the opening code fence to request a longer deadline (maximum `code_timeout_max_s=300`). A timeout returns `status=timeout` and lets the model continue; it does not reboot the board on an ordinary timeout. Long loops should call `__harness_check()`; `range()`, `time.sleep()` and `while True` are instrumented automatically.
+Execution results are fed back to the model according to configuration; subsequent fixes still require `/run` confirmation. Auto-feedback turns are bounded by `max_turns` (default 32; change with `/auto turns N` or in the web settings). The default execution timeout is 20 seconds. The model can put `timeout=45` on the same line as the opening code fence to request a longer deadline (maximum `code_timeout_max_s=300`). A timeout returns `status=timeout` and lets the model continue; it does not reboot the board on an ordinary timeout. `range()`, every `while` condition (not only `while True`) and `time.sleep()` are instrumented automatically. Very long `for` loops over other iterables, or one iteration that blocks for many seconds, still need an explicit `__harness_check()`.
 
-Background jobs run on their own worker threads, suitable for long-running work or when the user wants to keep interacting. Prefer the foreground for short programs. Stop is cooperative: it sets a cancellation flag and raises `ExecutionCancelled` at checkpoints. A job blocked inside a C/SPI call may only stop after a reboot. `timeout=0`/`infinite` allows a background job to run without a harness deadline, but does not suspend the 30-second watchdog.
+Background jobs run on their own worker threads, suitable for long-running work or when the user wants to keep interacting. Prefer the foreground for short programs. Stop is cooperative: it sets a cancellation flag and raises `ExecutionCancelled` at checkpoints. A job blocked inside a C/SPI call may only stop after a reboot. Stop-and-discard additionally drops the result: queued jobs are removed immediately, and a running job is removed when its worker reaches a checkpoint, so it never produces a ready result to continue or discard. `timeout=0`/`infinite` allows a background job to run without a harness deadline, but does not suspend the 30-second watchdog.
+
+Scheduled tasks are managed by the `__schedule` tool or the web Tasks page. A prompt task runs a normal agent turn on the main thread when due, and generated code still follows AUTO/confirmation; a code task starts a background job. AI-created or edited code tasks require AUTO, while the web form is confirmed by the administrator. One-time tasks survive reboot, recurring tasks missed over downtime run once, and nothing runs while the RTC is invalid. See [Command reference](docs/commands.md) for details.
 
 To rewind context, `/undo` removes the most recent user message and everything after it; `/undo 2` removes the second-most-recent user message and everything after it. The web button next to each real user message does the same; the top bar no longer duplicates it. Rewind only changes conversation context; it does not revert files, GPIO, network or other device side effects.
 
@@ -287,7 +290,8 @@ Automatic compaction starts at about 150000 tokens; `context_tokens` is 200000. 
 | `/auto [on\|off]` | Auto-run generated code and auto-feedback |
 | `/auto turns N` | Set the maximum auto-feedback turns (default 32, range 1–50) |
 | `/run` / `/run bg [note]` / `/continue [id]` | Run in the foreground, create a background job, or continue a result |
-| `/background [list\|status ID\|stop [ID]\|note ID TEXT\|discard ID]` | Inspect and manage background jobs |
+| `/background [list\|status ID\|stop [ID]\|stopdiscard [ID]\|note ID TEXT\|discard ID]` | Inspect and manage background jobs; `stopdiscard` stops and drops the result |
+| `/schedule [list\|status ID\|run ID\|enable ID\|disable ID\|delete ID]` | Inspect and manage scheduled tasks |
 | `/undo [N]` / `/rewind [N]` | Remove the Nth most recent user message and everything after it |
 | `/code` / `/discard [ID]` | Review or discard pending code or a background result |
 | `/compact` / `/context` / `/summary` | Compact, estimate and inspect context |
@@ -342,6 +346,7 @@ certs/        Mozilla CA bundle (installed automatically during deployment)
 | [Web console and AP provisioning](docs/web.md) | HTTP API, NDJSON, AP state machine, security boundaries |
 | [Skills](docs/skills.md) | Markdown instruction packages, progressive loading |
 | [MEMORY.md](docs/memory.md) | Always-loaded project context |
+| [OpenAI-compatible API](docs/openai.md) | Chat Completions mapping, thinking, streaming tool calls and limits |
 | [Anthropic Messages API](docs/anthropic.md) | Protocol mapping, thinking, headers and limits |
 | [Remote MCP tools](docs/mcp.md) | Streamable HTTP, configuration, confirmation and limits |
 | [Workspace](docs/workspace.md) | Persistent files and temporary storage |
@@ -386,7 +391,7 @@ See [Development, testing and debugging](docs/development.md) for the test matri
 - **Conversations are persisted** — `/state/conversation.json` stores committed messages and summaries that may contain sensitive user text. `/state/background.json` stores up to `background_max_records` (default 8) bounded background records and output until continued or discarded. Persistence can be disabled in the web settings; `/clear` and factory reset delete them.
 - **Native hardware is directly accessible** — generated code can drive real pins with `machine`/`neopixel`. Wrong wiring, voltage or use of flash/PSRAM, USB, console UART or strapping pins can damage peripherals or prevent the board from booting normally; verify the wiring before confirming execution.
 - **Auto-run is off by default** — `auto_run` requires an explicit opt-in and confirmation and can cause multiple billed requests; MCP `auto` requires confirmation as well.
-- **Timeouts are not a hard sandbox** — `range()`, `time.sleep()`, `while True` and `__harness_check()` can stop cooperatively. C-level blocking calls or complex `while` conditions that bypass every hook may still be reset by the 30-second watchdog. The Stop button stops receiving and subsequent turns; it cannot force-kill Python code that has already started.
+- **Timeouts are not a hard sandbox** — `range()`, every `while` condition, `time.sleep()` and `__harness_check()` can stop cooperatively. C/SPI-level blocking calls, very long `for` iterations, or one iteration that blocks for many seconds may still be reset by the 30-second watchdog. The Stop button stops receiving and subsequent turns; it cannot force-kill Python code that has already started.
 
 See [Safety, recovery and limitations](docs/safety.md) for the full threat model and recovery behavior.
 

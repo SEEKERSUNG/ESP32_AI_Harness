@@ -37,7 +37,7 @@ URL:  http://192.168.4.1/
 
 网页登录后可对话、执行命令页 `/` 命令、查看历史和修改 Wi-Fi/模型/API Key/CA/管理密码。网页与串口共享会话，模型回合互斥；网页触发的代码仍在串口主线程执行，串口只读命令在网页回合期间可用。
 
-网页 `/api/command` 接受所有**非交互**命令，包括 `/status`、`/history`、`/context`、`/summary`、`/code`、`/discard`、`/undo`、`/rewind`、`/skills`、`/skill-show`、`/skill-delete`、`/thinking`、`/auto`、`/native`、`/search`、`/test`、`/compact`、`/clear`、`/memory`、`/workspace`（`run` 除外）、`/mcp`、`/http`、`/background`、`/bg` 和只读 `/web`。需要写文件或改变风险设置的命令会在网页弹出确认对话框；确认后重试执行。
+网页 `/api/command` 接受所有**非交互**命令，包括 `/status`、`/history`、`/context`、`/summary`、`/code`、`/discard`、`/undo`、`/rewind`、`/skills`、`/skill-show`、`/skill-delete`、`/thinking`、`/auto`、`/native`、`/search`、`/test`、`/compact`、`/clear`、`/memory`、`/workspace`（`run` 除外）、`/mcp`、`/http`、`/background`、`/bg`、`/schedule` 和只读 `/web`。需要写文件或改变风险设置的命令会在网页弹出确认对话框；确认后重试执行。
 
 `/run`、`/run bg`、`/workspace run` 和 `/continue` 也可从网页命令页执行；生成/工作区代码通过主线程 handoff 运行，执行前浏览器会请求确认。以下命令仍需要第二次输入或重启设备，使用对应的专用表单/按钮（`/repl` 仅限串口）：
 
@@ -165,7 +165,7 @@ Skill 是 Markdown 指令包，放在 `/skills/<name>/SKILL.md`，不是可执�
 
 ## 内置工具
 
-Harness 不再支持模型自定义可执行 Tool。模型通过原生 function calling 调用内置工具：`__skill`、`__workspace`、`__memory`、`__search`、`__ask`、`__http`、`__background` 和 `__time`。OpenAI 兼容端点使用 `tools`，Anthropic 使用 `input_schema`；工具结果以原生 assistant/tool 消息回传。端点拒绝原生工具时自动回退到文本 `tool` 块，也可用 `/native off` 强制使用文本协议。单次任务最多 `max_tool_calls` 次连续调用（默认 16）。`__background` 只查看/请求停止后台任务；`__time` 读取 RTC 并按配置时区返回本地时间/UTC；内置工具直接读写 Skill、Workspace、MEMORY、Search/HTTP 或后台状态，不加载任意本地代码。
+Harness 不再支持模型自定义可执行 Tool。模型通过原生 function calling 调用内置工具：`__skill`、`__workspace`、`__memory`、`__search`、`__ask`、`__http`、`__background`、`__time` 和 `__schedule`。OpenAI 兼容端点使用 `tools`，Anthropic 使用 `input_schema`；工具结果以原生 assistant/tool 消息回传。端点拒绝原生工具时自动回退到文本 `tool` 块，也可用 `/native off` 强制使用文本协议。单次任务最多 `max_tool_calls` 次连续调用（默认 16）。`__background` 只查看/请求停止后台任务；`__time` 读取 RTC 并按配置时区返回本地时间/UTC，也可按用户明确要求写入 RTC 或修改显示时区；`__schedule` 管理持久定时任务；内置工具直接读写 Skill、Workspace、MEMORY、Search/HTTP、定时任务或后台状态，不加载任意本地代码。
 
 `__time` 用于回答“现在几点/今天几号”，直接读取 `machine.RTC().datetime()`，不依赖模型猜测：
 
@@ -196,13 +196,20 @@ Harness 不再支持模型自定义可执行 Tool。模型通过原生 function 
 | `/background` | 列出所有后台任务的编号、备注、状态和耗时 |
 | `/background status ID` | 查看单个任务及输出尾部 |
 | `/background stop [ID]` | 请求停止一个任务；省略 ID 时停止全部活动任务 |
+| `/background stopdiscard [ID]` | 停止并丢弃结果：排队任务立即移除，运行中任务在检查点后移除且不产生 ready 结果 |
 | `/background note ID TEXT` | 修改任务备注 |
 | `/background discard ID` | 丢弃已完成/失败的任务记录 |
+| `/schedule` | 列出定时任务、下次执行时间和上次状态 |
+| `/schedule status ID` | 查看单个任务的完整提示词或源码 |
+| `/schedule run ID` | 把任务排到当前时间，设备空闲时执行 |
+| `/schedule enable ID` | 启用任务；已完成的一次性任务会重新排期 |
+| `/schedule disable ID` | 停用任务，保留记录 |
+| `/schedule delete ID` | 确认后删除任务 |
 | `/discard [ID]` | 丢弃待执行代码、Skill 提案或已完成的后台结果 |
 
 已有待执行代码时，新任务会被拒绝，避免未审代码被静默替换。执行结果默认反馈给模型；修复代码仍需确认，除非开启自动运行。
 
-执行超时按整数秒处理：正的小数会向上取整到至少 1 秒，`0` 才表示无限（仅后台允许）。执行超时默认 `code_timeout_s=20` 秒，模型可在代码块**开围栏同一行**声明 `timeout=45`（即紧跟在语言标记 `python` 之后），有限值上限 `code_timeout_max_s=300`；后台任务可声明 `timeout=0`/`infinite`/`inf`/`unlimited` 表示无截止时间，串口/网页前台运行会拒绝这种形式。写在闭合围栏之后的普通文字不生效；为兼容模型常见写法，Harness 也会识别紧跟在闭合围栏后的单独一行 `timeout=45`，以及代码块第一行是独立 `timeout=45` 且后续源码不再使用该名字的情况（也接受空格、`s` 后缀和常见结尾标点），但开围栏形式是首选。Harness 会在执行前插桩 `range()` 和 `while True:`，并代理 `time.sleep()`；长 `while` 循环应主动调用 `__harness_check()`。截止时间到达后抛出内部 `ExecutionTimeout`，返回 `status=timeout` 和“设备未重启”的观察，自动反馈循环可以继续。超时只停止当前 `exec`，不会停止之前代码创建的 Python 线程。不调用任何钩子的 C 级阻塞仍由 30 秒看门狗兜底；自动模式仍会阻止明显无限循环。
+执行超时按整数秒处理：正的小数会向上取整到至少 1 秒，`0` 才表示无限（仅后台允许）。执行超时默认 `code_timeout_s=20` 秒，模型可在代码块**开围栏同一行**声明 `timeout=45`（即紧跟在语言标记 `python` 之后），有限值上限 `code_timeout_max_s=300`；后台任务可声明 `timeout=0`/`infinite`/`inf`/`unlimited` 表示无截止时间，串口/网页前台运行会拒绝这种形式。写在闭合围栏之后的普通文字不生效；为兼容模型常见写法，Harness 也会识别紧跟在闭合围栏后的单独一行 `timeout=45`，以及代码块第一行是独立 `timeout=45` 且后续源码不再使用该名字的情况（也接受空格、`s` 后缀和常见结尾标点），但开围栏形式是首选。Harness 会在执行前插桩 `range()`、**所有** `while` 条件（不只是 `while True:`）并代理 `time.sleep()`；遍历其他可迭代对象的超长 `for` 循环或单次迭代内长时间阻塞的调用仍应主动调用 `__harness_check()`。截止时间到达后抛出内部 `ExecutionTimeout`，返回 `status=timeout` 和“设备未重启”的观察，自动反馈循环可以继续。超时只停止当前 `exec`，不会停止之前代码创建的 Python 线程。不调用任何钩子的 C 级阻塞仍由 30 秒看门狗兜底；自动模式仍会阻止明显无限循环。
 
 ### 后台执行
 
@@ -218,13 +225,54 @@ AI 可通过内置 `__background` 工具管理多个任务：
 {"name":"__background","args":{"action":"status","id":2}}
 {"name":"__background","args":{"action":"stop","id":2}}
 {"name":"__background","args":{"action":"stop"}}
+{"name":"__background","args":{"action":"stop_discard","id":2}}
+{"name":"__background","args":{"action":"stop_discard"}}
 {"name":"__background","args":{"action":"note","id":2,"text":"dashboard"}}
 {"name":"__background","args":{"action":"discard","id":2}}
 ```
 
 `action=start` 只在 **AUTO 模式（`auto_run=true`）** 下允许，模型可直接提交裸 MicroPython 源码、备注和可选超时，无需再生成 python 代码块。AUTO 关闭时会返回错误并要求模型改为普通 python 代码块，由用户确认前台/后台执行。`source` 最大为 `code_limit`（默认 12288 字符）；解析器为 `start` 放宽工具参数上限以容纳源码，其他 `__background` 动作仍使用 `tool_args_limit`。明显无限循环默认拒绝；确实要长期运行的任务必须显式传 `timeout=0`。启动后模型不应再重复提交同一段代码。`start` 启动的任务仍受最大并发数、结果记录上限、协作停止和看门狗规则约束。
 
-`list` 返回编号、备注、状态、耗时和超时；`status` 额外返回输出尾部。网页每个任务提供停止按钮，手动模式下还提供继续/丢弃按钮，对应 `POST /api/background/stop`、`POST /api/continue` 和 `POST /api/background/discard`；AUTO 模式由设备主线程自动继续，不显示这两个选项。自动继续可能在没有串口用户时运行，因此不会为 Skill 提案或需要确认的 MCP 工具弹出阻塞式串口确认：Skill 提案保持待处理（可从网页卡片或之后的串口 `/code` 处理），非 `auto` 服务器的 MCP 工具会被拒绝并返回错误。停止是协作式的，只在 `__harness_check()`、插桩后的 `range`/`while True` 或 `time.sleep()` 检查点生效；阻塞在 C/SPI 调用中的代码可能只能等看门狗。被取消/停止的任务是用户的明确操作，自动继续只报告停止结果，不会自动重启同一个后台程序，除非用户再次要求。后台代码可在开围栏写 `timeout=0`（或 `timeout=infinite`/`inf`/`unlimited`）请求无截止时间；该形式只允许后台执行，串口前台 `/run` 会拒绝并保留 pending。无限后台程序必须依赖协作检查点和显式停止，30 秒看门狗仍对完全阻塞的代码生效。后台输出通过 `print()` 捕获；直接写 `sys.stdout` 的内容可能丢失。如果脚本长时间阻塞且不调用任何钩子，看门狗仍会复位设备，RAM 中的网页会话会丢失，登录页会显示上次复位原因（例如 WDT_RESET）。若启动时报 `can't create thread`，说明 ESP-IDF 内部堆不足；Harness 会先关闭空闲 HTTPS 连接、GC，并自动尝试更小的 worker 栈（32/24/16/12/8 KB），仍失败时请降低 `background_thread_stack_kb` 或 `background_max_jobs` 后重试，必要时重启设备。
+`list` 返回编号、备注、状态、耗时和超时；`status` 额外返回输出尾部。网页每个任务提供停止按钮，手动模式下还提供继续/丢弃按钮，对应 `POST /api/background/stop`、`POST /api/continue` 和 `POST /api/background/discard`；AUTO 模式由设备主线程自动继续，不显示这两个选项。自动继续可能在没有串口用户时运行，因此不会为 Skill 提案或需要确认的 MCP 工具弹出阻塞式串口确认：Skill 提案保持待处理（可从网页卡片或之后的串口 `/code` 处理），非 `auto` 服务器的 MCP 工具会被拒绝并返回错误。停止是协作式的，只在 `__harness_check()`、插桩后的 `range`、所有 `while` 条件或 `time.sleep()` 检查点生效；阻塞在 C/SPI 调用中的代码可能只能等看门狗。`stop_discard`/`/background stopdiscard` 在停止之外丢弃结果：`queued` 任务立即从表中移除，运行中的任务标记 `discard_on_finish`，worker 结束后直接移除，不会产生 `ready` 结果，也不会被自动继续或手动“继续”取走；重启后不会恢复为 error/ready 记录。被取消/停止的任务是用户的明确操作，自动继续只报告停止结果，不会自动重启同一个后台程序，除非用户再次要求。后台代码可在开围栏写 `timeout=0`（或 `timeout=infinite`/`inf`/`unlimited`）请求无截止时间；该形式只允许后台执行，串口前台 `/run` 会拒绝并保留 pending。无限后台程序必须依赖协作检查点和显式停止，30 秒看门狗仍对完全阻塞的代码生效。后台输出通过 `print()` 捕获；直接写 `sys.stdout` 的内容可能丢失。如果脚本长时间阻塞且不调用任何钩子，看门狗仍会复位设备，RAM 中的网页会话会丢失，登录页会显示上次复位原因（例如 WDT_RESET）。若启动时报 `can't create thread`，说明 ESP-IDF 内部堆不足；Harness 会先关闭空闲 HTTPS 连接、GC，并自动尝试更小的 worker 栈（32/24/16/12/8 KB），仍失败时请降低 `background_thread_stack_kb` 或 `background_max_jobs` 后重试，必要时重启设备。
+
+## 定时任务
+
+定时任务保存在 `/state/schedules.json`，按设备 RTC 的本地时间（`timezone_offset_minutes`，默认 UTC+8）执行。RTC 必须有效；设备重启后尚未同步 NTP、年份异常时不会触发任务。网页“任务”标签页可查看后台任务和定时任务、创建/编辑/删除/启停/立即运行；串口和网页命令页使用 `/schedule` 管理。
+
+任务分两类：
+
+- **提示词任务**：到点后在串口主线程执行一个正常的 Agent 回合。生成的代码仍遵守 AUTO/确认规则；AUTO 关闭时只会留下 pending 代码，不会自动执行。
+- **代码任务**：到点后把保存的 MicroPython 源码作为后台任务启动，结果出现在“任务 → 后台任务”中。AI 通过 `__schedule` 创建、修改、启用或立即运行代码任务时必须先开启 AUTO（停用/删除不受限）；网页表单则由用户确认后创建，不要求 AUTO。
+
+执行方式：
+
+- 一次性：`delay_s` 秒后，或本地 `at`（`YYYY-MM-DD HH:MM`）；设备重启或离线期间过期时，恢复后会补跑一次；
+- 重复：`every_s` 秒一次，或每天本地 `at`（`HH:MM`）。重复任务错过多次时只补跑一次，不会连续爆发；
+- 设备空闲（`esp32>` 提示符且无待执行代码/提问）时逐个执行；同一时间只执行一个定时任务；
+- 失败后 60 秒重试，最多 3 次；一次性任务最终保持停用，重复任务回到正常周期；
+- 最多 `schedule_max_tasks` 个（默认 8），间隔至少 `schedule_min_interval_s` 秒（默认 30）；
+- 修改时区会重新计算每日任务的下次执行时间；一次性任务保持原先的 UTC 时刻。
+
+AI 工具示例：
+
+```json
+{"name":"__schedule","args":{"action":"create","type":"prompt","name":"reminder","prompt":"提醒我检查传感器","when":"once","delay_s":600}}
+{"name":"__schedule","args":{"action":"create","type":"prompt","name":"briefing","prompt":"给我早间简报","when":"daily","at":"08:00"}}
+{"name":"__schedule","args":{"action":"list"}}
+{"name":"__schedule","args":{"action":"update","id":1,"when":"interval","every_s":3600}}
+{"name":"__schedule","args":{"action":"run","id":1}}
+{"name":"__schedule","args":{"action":"delete","id":1}}
+```
+
+`__time` 除了读取时间，也可在用户明确要求时写入 RTC 或修改显示时区：
+
+```json
+{"name":"__time","args":{"action":"set","at":"2026-11-27 08:00"}}
+{"name":"__time","args":{"action":"set","epoch":1795737600}}
+{"name":"__time","args":{"action":"timezone","timezone_offset_minutes":480}}
+```
+
+`set` 的 `at` 是本地时间，写入前会换算成 UTC；RTC 始终保存 UTC。`timezone` 只改变显示和每日任务，不改变 RTC 时刻。网页对应 `GET/POST /api/schedules`；代码任务需要 `confirm:true`。
 
 ## 自动模式
 

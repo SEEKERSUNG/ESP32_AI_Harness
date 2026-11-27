@@ -575,6 +575,12 @@ class WebApp:
             "background": self.app.background_view(),
             "backgrounds": self.app.background_views(result_limit=4096),
             "background_active": bool(self.app.background_active()),
+            "schedules": (
+                self.app.schedule_views()
+                if getattr(self.app, "schedule_views", None) is not None
+                else []
+            ),
+            "schedule_seq": int(getattr(self.app, "schedule_seq", 0) or 0),
             "auto": {
                 "run": bool(self.app.config.get("auto_run", False)),
                 "feedback": bool(self.app.config.get("auto_feedback", True)),
@@ -667,6 +673,10 @@ class WebApp:
                 self.app.config.get("background_execution", True)),
             "background_max_jobs": int(
                 self.app.config.get("background_max_jobs", 4)),
+            "schedule_max_tasks": int(
+                self.app.config.get("schedule_max_tasks", 8)),
+            "schedule_min_interval_s": int(
+                self.app.config.get("schedule_min_interval_s", 30)),
             "web_port": self.app.config.get("web_port", 80),
             "web_enabled": bool(self.app.config.get("web_enabled", True)),
             "web_password_set": self.auth.configured(),
@@ -836,6 +846,12 @@ class WebApp:
                 return
             if path == "/api/background/stop" and req.method == "POST":
                 self._stop_background(req, writer)
+                return
+            if path == "/api/schedules":
+                if req.method == "GET":
+                    self._schedules_view(req, writer)
+                else:
+                    self._update_schedules(req, writer)
                 return
             if path == "/api/discard" and req.method == "POST":
                 self._discard(writer)
@@ -1138,6 +1154,9 @@ class WebApp:
             self.app.config.save_all()
             saved = True
             self.app.refresh_background_limits()
+            if ("timezone_offset_minutes" in body
+                    and getattr(self.app, "rebase_schedules", None) is not None):
+                self.app.rebase_schedules()
             if model_changed:
                 self.app.reload_llm()
             else:
@@ -1336,7 +1355,7 @@ class WebApp:
             "/discard", "/undo", "/rewind", "/skills", "/skill-show",
             "/skill-delete", "/thinking", "/auto", "/native", "/search",
             "/test", "/compact", "/clear", "/memory", "/workspace",
-            "/mcp", "/http", "/background", "/bg", "/web",
+            "/mcp", "/http", "/background", "/bg", "/schedule", "/web",
             "/setup", "/wifi", "/model", "/ca", "/repl", "/factory-reset",
             "/run", "/continue",
         )
@@ -1555,6 +1574,7 @@ class WebApp:
     def _stop_background(self, req, writer):
         body = self._json(req)
         job_id = body.get("id")
+        discard = _boolean(body, "discard", False)
         if not self.app.background_active():
             writer.send_json(200, {
                 "ok": True, "stop_requested": False, "count": 0,
@@ -1573,14 +1593,130 @@ class WebApp:
                 })
                 return
         requested = self.app.stop_background(
-            "requested from web", job_id=job_id)
+            "requested from web", job_id=job_id, discard=discard)
         writer.send_json(200, {
             "ok": True, "stop_requested": bool(requested),
+            "discard": bool(discard),
             "count": int(requested or 0),
             "message": (
-                "Stop requested; it is applied at the next cooperative checkpoint."
+                "Stop%s requested; it is applied at the next cooperative "
+                "checkpoint.%s" % (
+                    " and discard" if discard else "",
+                    " The result will be dropped." if discard else "")
                 if requested else "Could not request a stop."),
         })
+
+    def _schedules_view(self, req, writer):
+        if getattr(self.app, "schedule_full_views", None) is None:
+            raise _error("Scheduled tasks are unavailable", 503, "internal")
+        raw_id = req.query.get("id")
+        if raw_id is not None and raw_id != "":
+            try:
+                task_id = int(raw_id)
+            except (TypeError, ValueError):
+                raise _error("id must be an integer", 400, "invalid")
+            view = self.app.schedule_view(task_id, full=True)
+            if view is None:
+                raise _error("No scheduled task #%s" % task_id,
+                             404, "schedule")
+            writer.send_json(200, {"ok": True, "tasks": [view]})
+            return
+        try:
+            max_tasks = int(self.app.config.get("schedule_max_tasks", 8))
+        except (TypeError, ValueError):
+            max_tasks = 8
+        try:
+            min_interval = int(
+                self.app.config.get("schedule_min_interval_s", 30))
+        except (TypeError, ValueError):
+            min_interval = 30
+        writer.send_json(200, {
+            "ok": True,
+            "tasks": self.app.schedule_full_views(),
+            "max_tasks": max_tasks,
+            "min_interval_s": min_interval,
+            "auto_run": bool(self.app.config.get("auto_run", False)),
+        })
+
+    def _update_schedules(self, req, writer):
+        body = self._json(req)
+        action = str(body.get("action", "create") or "create").lower()
+        raw_id = body.get("id")
+        task_id = None
+        if raw_id is not None and raw_id != "":
+            try:
+                task_id = int(raw_id)
+            except (TypeError, ValueError):
+                raise _error("id must be an integer", 400, "invalid")
+        if action not in (
+                "create", "update", "delete", "enable", "disable", "run"):
+            raise _error(
+                "action must be create, update, delete, enable, disable or run",
+                400, "invalid")
+        if action != "create" and task_id is None:
+            raise _error("id is required for action=%s" % action,
+                         400, "invalid")
+        fields = {}
+        for key in ("name", "type", "prompt", "source", "when",
+                    "delay_s", "at", "every_s", "timeout", "enabled"):
+            if key in body:
+                fields[key] = body[key]
+        task_type = str(fields.get("type", "") or "").lower()
+        target_type = task_type
+        if action == "update" and not target_type:
+            existing = self.app.schedule_view(task_id)
+            target_type = (
+                existing.get("type", "prompt") if existing is not None
+                else "prompt")
+        wants_code = (
+            target_type == "code"
+            and (action == "create"
+                 or "source" in fields
+                 or any(key in fields for key in (
+                     "when", "delay_s", "at", "every_s", "timeout")))
+        )
+        if (action in ("create", "update") and wants_code
+                and not _boolean(body, "confirm", False)):
+            raise _error(
+                "Scheduled code runs with full device permissions; confirm it "
+                "in the web UI", 400, "confirm")
+        try:
+            if action == "create":
+                task = self.app.create_schedule(fields)
+                message = "Scheduled task #%s created." % task.get("id", "?")
+            elif action == "update":
+                task = self.app.update_schedule(task_id, fields)
+                message = "Scheduled task #%s updated." % task.get("id", "?")
+            elif action == "delete":
+                task = self.app.delete_schedule(task_id)
+                message = "Scheduled task #%s deleted." % task.get("id", "?")
+            elif action in ("enable", "disable"):
+                task = self.app.set_schedule_enabled(
+                    task_id, action == "enable")
+                message = "Scheduled task #%s %s." % (
+                    task.get("id", "?"),
+                    "enabled" if action == "enable" else "disabled")
+            else:
+                task = self.app.request_schedule_run(task_id)
+                message = (
+                    "Scheduled task #%s queued; it runs when the device is "
+                    "idle." % task.get("id", "?"))
+        except Exception as exc:
+            raise _error(str(exc), 400, "schedule")
+        response = {
+            "ok": True,
+            "message": message,
+            "tasks": (
+                self.app.schedule_views()
+                if getattr(self.app, "schedule_views", None) is not None
+                else []
+            ),
+        }
+        if action != "delete" and self.app.schedule_view(
+                task.get("id"), full=True) is not None:
+            response["task"] = self.app.schedule_view(
+                task.get("id"), full=True)
+        writer.send_json(200, response)
 
     def _discard_background(self, req, writer):
         body = self._json(req)

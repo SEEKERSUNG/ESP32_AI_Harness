@@ -17,6 +17,7 @@ from harness.console import (
     factory_reset_files,
 )
 from harness.executor import ExecutionResult, Executor
+from harness.schedule import Scheduler
 from tests.support import DummyConfig
 
 
@@ -930,12 +931,17 @@ class ApplicationBackgroundTests(unittest.TestCase):
         self.assertEqual("continued", app.live.content)
         self.assertFalse(app.live.active)
         self.assertGreaterEqual(app.live.id, 1)
+        self.assertTrue(app.live.separate_turn)
+        self.assertTrue(any(
+            event.get("t") == "notice" for event in app.live.events))
+        self.assertTrue(app.live.summary()["separate_turn"])
         self.assertFalse(any(
             event.get("t") == "execution" for event in app.live.events))
 
     def test_live_turn_buffers_and_caps_stream_text(self):
         live = LiveTurn(limit=1024)
-        live.begin()
+        live.begin(separate_turn=True)
+        self.assertTrue(live.summary()["separate_turn"])
         live.next_turn()
         live.append_content("a" * 600)
         live.next_turn()
@@ -1040,6 +1046,141 @@ class ApplicationBackgroundTests(unittest.TestCase):
 
         self.assertFalse(app.confirm_mcp_call("server", "write_tool", {}))
         self.assertEqual(1, len(app.ui.asked))
+
+
+class FakeScheduleAgent:
+    def __init__(self):
+        self.asked = []
+        self.history = []
+        self.pending_source = None
+        self.pending_skill = None
+        self.pending_question = None
+
+    def has_pending(self):
+        return False
+
+    def ask(self, text):
+        self.asked.append(text)
+        self.history.append({"role": "user", "content": text,
+                             "kind": "user"})
+        self.history.append({"role": "assistant", "content": "done",
+                             "kind": "assistant"})
+        return "done", False
+
+
+class ApplicationScheduleTests(unittest.TestCase):
+    def make_app(self):
+        app = Application.__new__(Application)
+        app.main_thread_id = threading.get_ident()
+        app.main_lock = _thread.allocate_lock()
+        app.main_request = None
+        app.execution_active = False
+        app.busy_source = ""
+        app.turn_lock = _thread.allocate_lock()
+        app._schedule_running = False
+        app._auto_continue_running = False
+        app._at_prompt = True
+        app.config = DummyConfig(
+            background_execution=True,
+            timezone_offset_minutes=480,
+        )
+        app.schedules = Scheduler(app.config, None)
+        app.schedule_seq = 0
+        app.agent = FakeScheduleAgent()
+        app.live = LiveTurn()
+        app.ui = FakeSerialUI()
+        app.notices = []
+        app.queue_notice = app.notices.append
+        app.drain_notices = lambda: None
+        app.prepare_for_new_turn = lambda: None
+        app.prepare_cloud = lambda: None
+        app.show_response = lambda explanation, has_code, auto=False: None
+        app.run_pending = lambda auto=False: None
+        app._require_background_execution = lambda: None
+        app._create_background_job = lambda source, timeout, auto=False, driver="", note="": {"id": 7}
+        return app
+
+    def make_due_prompt(self, app, now=1000):
+        app.schedules.create({
+            "type": "prompt", "name": "ping",
+            "prompt": "Check the board", "when": "once",
+            "delay_s": 10,
+        }, now)
+        return now
+
+    def snapshot(self, epoch, valid=True):
+        return {"valid": valid, "epoch": epoch}
+
+    def test_prompt_task_runs_one_agent_turn_and_disables_once(self):
+        app = self.make_app()
+        self.make_due_prompt(app)
+        with mock.patch(
+                "harness.console.clock.snapshot",
+                return_value=self.snapshot(1020)):
+            result = app.service_schedules()
+        self.assertIsNotNone(result)
+        self.assertEqual(1, len(app.agent.asked))
+        self.assertIn("定时任务 #1", app.agent.asked[0])
+        self.assertIn("Check the board", app.agent.asked[0])
+        task = app.schedules.get(1)
+        self.assertFalse(task["enabled"])
+        self.assertEqual("ok", task["last_status"])
+        self.assertEqual(1, task["run_count"])
+        self.assertEqual(1, app.schedule_seq)
+        self.assertEqual("", app.busy_source)
+        self.assertFalse(app.turn_lock.locked())
+        self.assertTrue(any(
+            "Scheduled task #1" in line for line in app.ui.lines))
+
+    def test_code_task_starts_a_background_job(self):
+        app = self.make_app()
+        app.schedules.create({
+            "type": "code", "name": "blink",
+            "source": "print(1)", "when": "once", "delay_s": 10,
+        }, 1000)
+        with mock.patch(
+                "harness.console.clock.snapshot",
+                return_value=self.snapshot(1020)):
+            result = app.service_schedules()
+        self.assertIsNotNone(result)
+        task = app.schedules.get(1)
+        self.assertFalse(task["enabled"])
+        self.assertEqual("ok", task["last_status"])
+        self.assertTrue(any(
+            "started background job #7" in notice
+            for notice in app.notices))
+        self.assertEqual(1, app.schedule_seq)
+        self.assertEqual([], app.agent.asked)
+
+    def test_invalid_rtc_skips_scheduled_tasks(self):
+        app = self.make_app()
+        self.make_due_prompt(app)
+        with mock.patch(
+                "harness.console.clock.snapshot",
+                return_value=self.snapshot(1020, valid=False)):
+            self.assertIsNone(app.service_schedules())
+        self.assertEqual([], app.agent.asked)
+        self.assertTrue(app.schedules.get(1)["enabled"])
+
+    def test_prepare_failure_keeps_one_time_task_for_retry(self):
+        app = self.make_app()
+        self.make_due_prompt(app)
+
+        def fail():
+            raise RuntimeError("network offline")
+
+        app.prepare_cloud = fail
+        with mock.patch(
+                "harness.console.clock.snapshot",
+                return_value=self.snapshot(1020)):
+            app.service_schedules()
+        task = app.schedules.get(1)
+        self.assertTrue(task["enabled"])
+        self.assertEqual("error", task["last_status"])
+        self.assertIn("network offline", task["last_error"])
+        self.assertEqual(1020 + 60, task["next_run"])
+        self.assertFalse(app.turn_lock.locked())
+        self.assertEqual(1, app.schedule_seq)
 
 
 if __name__ == "__main__":

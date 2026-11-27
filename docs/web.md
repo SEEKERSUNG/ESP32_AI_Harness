@@ -50,11 +50,12 @@ AP 是 WPA2。首次设置只接受来自 AP 网段的客户端（可用 `web_se
 ## 网页能力
 
 - 视觉：响应式布局，跟随系统浅色/深色主题；使用本地 CSS 变量、无外部字体/CDN/图片，符合严格 CSP；输入框 16px、触控目标不小于 44px。
-- 对话：同一用户请求的 thinking、工具调用/结果、执行结果和最终正文都放在一个 turn 卡片内，按发生顺序排列；`show_thinking=true` 时每个模型请求的 reasoning 是卡片内的可折叠步骤，最后才是正文。reasoning 随 assistant 消息持久化（每条最多 4096 字符），刷新页面后仍显示；实时流式和刷新后的历史使用同一套 turn 结构。工具/执行记录默认折叠，运行、丢弃和保存按钮保持在折叠区外；流式更新会保留已展开区块的状态。
+- 对话：同一用户请求的 thinking、工具调用/结果、执行结果和最终正文都放在一个 turn 卡片内，按发生顺序排列；`show_thinking=true` 时每个模型请求的 reasoning 是卡片内的可折叠步骤，最后才是正文。reasoning 随 assistant 消息持久化（每条最多 4096 字符），刷新页面后仍显示；实时流式和刷新后的历史使用同一套 turn 结构。后台任务结果和定时任务续答属于新的 Agent 消息，会在新的 turn 中显示（后台结果折叠为“后台任务结果”，定时任务显示为一条用户请求），不会与上一条回复合并。工具/执行记录默认折叠，运行、丢弃和保存按钮保持在折叠区外；流式更新会保留已展开区块的状态。
 - 停止：流式期间显示“停止”按钮。点击后浏览器停止接收响应，设备端在下一批事件发送失败时中止当前模型请求；页面保持等待并轮询真实 busy 状态，回合结束后才恢复输入。**已经开始执行的生成代码不会被停止按钮中断**；普通代码会在 `code_timeout_s`/模型声明的 `timeout=` 截止时间停止并返回 `status=timeout`，不经过协作钩子的代码仍可能继续产生副作用，直到执行结束或看门狗复位。`timeout=` 应写在开围栏同一行；闭合围栏后的独立 `timeout=` 行和代码块首个未再使用的独立 `timeout=N` 行也会被兼容识别，其他说明文字不会改变超时。部分未提交的模型回答不会写入历史。
 - 模型提问：模型调用 `__ask` 时显示问题卡（标题、问题、最多 8 个选项按钮和自定义输入）。点击选项或直接输入文本会作为下一条消息发送；问题事件不阻塞设备线程，刷新后可从 `/api/status` 的 `question` 字段恢复。系统提示词会区分 `auto_run` 模式，避免模型在自动执行时向用户索要执行输出。
 - 对话框控件：Thinking 下拉框只有关闭/Low/High/Max 四档（默认 High），选择后立即写入 `config.json`，重启/复位后保持；AUTO 控制 `auto_run`，开启需要确认，关闭不需要。请求期间控件禁用，保存失败恢复设备实际状态。
-- 布局：对话/命令导航栏固定在页面底部，Thinking/AUTO 位于对话框旁，窄屏自动换行；输入框位于导航栏上方，长对话不会把导航栏挤出视野。切换到命令页再返回对话页时，页面会自动滚动到最新消息；新内容到达时仅在用户接近底部时跟随，避免打断向上翻阅历史。
+- 布局：对话/命令/任务导航栏固定在页面底部，Thinking/AUTO 位于对话框旁，窄屏自动换行；输入框位于导航栏上方，长对话不会把导航栏挤出视野。切换到命令页再返回对话页时，页面会自动滚动到最新消息；新内容到达时仅在用户接近底部时跟随，避免打断向上翻阅历史。
+- 任务页：后台任务不再作为聊天气泡插入对话，而是统一显示在“任务 → 后台任务”中，位置固定，不随新回复漂移；每个任务仍提供停止、继续、丢弃和输出抽屉。下方“定时任务”列出一次性/重复任务，支持新建、编辑、启停、立即运行和删除。提示词任务到点后在主线程执行一个 Agent 回合；代码任务到点后创建后台任务。页面通过 `/api/status.schedules` 刷新任务摘要，`schedule_seq` 变化后自动刷新历史。
 - 代码确认：默认显示“运行/丢弃”；`auto_run=true` 时安全代码自动执行并自动反馈。
 - Skill：显示提案卡，可保存或丢弃；Skill 永不自动保存。
 - 命令页：非交互 `/` 命令和输出；需要确认的命令会弹出确认框，交互式命令会提示使用对应表单或串口。
@@ -92,7 +93,7 @@ AP 是 WPA2。首次设置只接受来自 AP 网段的客户端（可用 `web_se
 - Web 线程不能调用 `os.dupterm`、`machine.reset`，不能直接喂狗。
 - 网页触发前台执行时，Web 线程把可调用对象放入主线程请求槽；主线程在 `SerialUI.readline` 空闲钩子中执行，并回报结果。前台生成代码和工作区脚本的 `Executor.execute()` 都通过同一通道回到主线程。
 - 后台任务不占用主线程请求槽：`BackgroundPool` 立即创建/排队 worker，任务在状态中从 `queued` 变为 `running`、`ready`/`error`。结果在继续前写入 `/state/background.json`，重启后已完成结果可恢复，未完成记录变为 `error` 且绝不自动重跑。
-- 串口主线程在 `esp32>` 空闲时喂狗；前台代码执行期间只有 `range()`、`while True`、`time.sleep()` 和 `__harness_check()` 等协作钩子会喂狗，后台 worker 的喂狗调用是空操作。普通超时在 `code_timeout_s`/`timeout=` 到达时停止并返回 `status=timeout`；绕过所有钩子的前台死循环仍会在 `watchdog_ms`（默认 30 秒）后复位，恢复的 pending 代码不会在启动时自动执行。后台 worker 完全阻塞时主线程仍可喂狗，但该任务无法被协作停止，通常只能重启设备。
+- 串口主线程在 `esp32>` 空闲时喂狗；前台代码执行期间只有 `range()`、插桩后的所有 `while` 条件、`time.sleep()` 和 `__harness_check()` 等协作钩子会喂狗，后台 worker 的喂狗调用是空操作。普通超时在 `code_timeout_s`/`timeout=` 到达时停止并返回 `status=timeout`；C/SPI 级阻塞或超长非 `range` 的 `for` 循环仍会在 `watchdog_ms`（默认 30 秒）后复位，恢复的 pending 代码不会在启动时自动执行。后台 worker 完全阻塞时主线程仍可喂狗，但该任务无法被协作停止，通常只能重启设备。
 - 串口只读命令在网页回合期间仍可用；网页和串口的变更型操作通过同一把非阻塞锁互斥，冲突时返回 409 或“Busy”提示。后台任务运行期间允许对话、前台运行、继续结果和后台控制；配置/维护类 Web 操作被拒绝，`/api/status`、`/api/history` 等只读查询仍可轮询。
 - 网页前台执行期间主线程不读取串口输入；后台任务不阻塞主线程，因此网页请求、串口和对话可以继续。后台任务不会让 Web 线程永久持有回合锁。
 
@@ -133,8 +134,10 @@ POST /api/chat          NDJSON 流
 POST /api/run           NDJSON 流；{mode:"foreground"|"background",note?}
 POST /api/continue      NDJSON 流；{id?:任务编号} 提交已完成结果并继续模型
 POST /api/rewind        {count:N} 或 {index:绝对历史下标}；删除用户消息及其后上下文
-POST /api/background/stop     {id?} 请求协作式停止一个或全部活动后台任务
+POST /api/background/stop     {id?,discard?} 协作式停止；discard:true 同时丢弃结果
 POST /api/background/discard  {id?} 或 {all:true} 丢弃已完成/失败的后台结果
+GET  /api/schedules           列出完整定时任务；?id=N 返回单个任务
+POST /api/schedules           {action:"create|update|delete|enable|disable|run", id?, ...字段}
 POST /api/discard
 POST /api/save-skill
 POST /api/command
@@ -146,7 +149,7 @@ POST /api/factory-reset {confirm:true,password} 删除用户数据并重启
 错误统一为：
 
 ```json
-{"ok":false,"error":"...","code":"busy|pending|background|auth|rate_limited|invalid|confirm|interactive|timeout|internal"}
+{"ok":false,"error":"...","code":"busy|pending|background|schedule|auth|rate_limited|invalid|confirm|interactive|timeout|internal"}
 ```
 
 ### NDJSON 事件
@@ -164,9 +167,11 @@ question, response, code, background, execution, skill, feedback, done, error
 {"t":"background","id":3,"phase":"running","auto":true,"recovered":false,"timeout_s":45,"source_chars":120,"task":"draw the dashboard","note":"dashboard"}
 ```
 
-`GET /api/status` 的 `backgrounds` 数组包含每个任务的 `id`、`phase`（`queued`/`running`/`ready`/`error`）、`elapsed_ms`、`timeout_s`（`0` 表示无限）、`note`、`task`、`turns`、`stop_requested`/`stop_reason` 以及完成后的有界 `result`（`ok`/`timed_out`/`cancelled`/`output`/`error`/`elapsed_ms`）。`background` 保留兼容的单任务视图（优先活动任务，其次最早完成的任务），`background_active` 是布尔汇总。`turn_busy` 只表示模型回合锁；`busy` 还包含后台任务，因此后台运行期间 `busy=true`、`turn_busy=false` 仍允许发送新对话。
+`GET /api/status` 的 `backgrounds` 数组包含每个任务的 `id`、`phase`（`queued`/`running`/`ready`/`error`）、`elapsed_ms`、`timeout_s`（`0` 表示无限）、`note`、`task`、`turns`、`stop_requested`/`stop_reason`、`discard_on_finish` 以及完成后的有界 `result`（`ok`/`timed_out`/`cancelled`/`output`/`error`/`elapsed_ms`）。`background` 保留兼容的单任务视图（优先活动任务，其次最早完成的任务），`background_active` 是布尔汇总。`turn_busy` 只表示模型回合锁；`busy` 还包含后台任务，因此后台运行期间 `busy=true`、`turn_busy=false` 仍允许发送新对话。
 
-每个后台任务提供“停止 #N/继续 #N/丢弃结果”按钮，分别调用 `POST /api/background/stop {"id":N}`、`POST /api/continue {"id":N}` 和 `POST /api/background/discard {"id":N}`；AI 使用内置 `__background start|list|status|stop|note|discard`。AUTO 模式下 AI 可直接用 `action=start` 提交源码并启动任务，非 AUTO 模式会被拒绝，要求改为普通代码块确认；`start` 的明显无限循环默认拒绝，必须显式 `timeout=0` 才允许。停止只设置协作取消标志，在 `__harness_check()`、`range`、`while True` 或 `time.sleep()` 检查点抛出 `ExecutionCancelled`，不会强制杀死阻塞中的 C/SPI 调用；完成后的 `execution` 事件包含 `cancelled`。后台输出通过 `print()` 捕获，直接写 `sys.stdout` 可能丢失。`GET /api/history` 为每条消息返回绝对 `index` 和 `kind`（`user`/`assistant`/`observation`），回退使用该 `index`；`kind=observation` 的 `Local ...` 记录不能作为回退目标。
+`GET /api/status` 的 `schedules` 数组包含每个定时任务的 `id`、`name`、`type`（`prompt`/`code`）、`enabled`、`when`（`once`/`interval`/`daily`）、`delay_s`、`at_text`、`every_s`、`timeout_s`、`next_run`、`next_local`、`next_input`、`last_run`、`last_local`、`last_status`、`last_error`、`run_count`、`attempts`、`running`、`preview`（不包含完整提示词/源码）和 `when_label`。`schedule_seq` 在每次定时任务执行后递增，网页据此刷新历史。`GET /api/schedules` 返回完整提示词/源码（`?id=N` 只返回一条）；`POST /api/schedules` 支持 `action=create|update|delete|enable|disable|run`，创建/编辑代码任务必须带 `confirm:true`。`run` 只把 `next_run` 设为当前时间并排队，由串口主线程在设备空闲时执行。任务写入 `/state/schedules.json`，恢复出厂设置会删除；RTC 无效（未同步 NTP、年份异常）时不执行。
+
+每个后台任务提供“停止 #N/停止并丢弃 #N/继续 #N/丢弃结果”按钮，分别调用 `POST /api/background/stop {"id":N}`、`POST /api/background/stop {"id":N,"discard":true}`、`POST /api/continue {"id":N}` 和 `POST /api/background/discard {"id":N}`。停止并丢弃会立即移除排队任务，运行中任务在协作检查点结束后移除，不产生可继续的 ready 结果；多个活动任务还提供“停止并丢弃全部”。AI 使用内置 `__background start|list|status|stop|stop_discard|note|discard`。AUTO 模式下 AI 可直接用 `action=start` 提交源码并启动任务，非 AUTO 模式会被拒绝，要求改为普通代码块确认；`start` 的明显无限循环默认拒绝，必须显式 `timeout=0` 才允许。停止只设置协作取消标志，在 `__harness_check()`、插桩后的 `range`、所有 `while` 条件或 `time.sleep()` 检查点抛出 `ExecutionCancelled`，不会强制杀死阻塞中的 C/SPI 调用；完成后的 `execution` 事件包含 `cancelled`。后台输出通过 `print()` 捕获，直接写 `sys.stdout` 可能丢失。`GET /api/history` 为每条消息返回绝对 `index` 和 `kind`（`user`/`assistant`/`observation`），回退使用该 `index`；`kind=observation` 的 `Local ...` 记录不能作为回退目标。
 
 `/api/chat` 的 `done` 事件额外返回 `user_index`，即本轮用户消息在当前 `agent.history` 中的绝对下标；网页据此在流结束时立即给实时用户气泡添加“回退到这里”按钮，无需刷新历史。其他流的 `user_index` 为 `null`。手动停止时浏览器收不到 `done`，网页会保留停止轮询，等 `/api/status` 确认设备回合结束后刷新 `/api/history`，再按每条消息的绝对 `index` 补上回退按钮。
 
@@ -199,7 +204,7 @@ question, response, code, background, execution, skill, feedback, done, error
 | `web_history_limit` | `200` | `/api/history` 最大消息数 |
 | `web_history_chars` | `131072` | 历史响应总字符预算 |
 
-网页对话视图加载的是 `/api/history` 的**有界最近窗口**：最多 `web_history_limit` 条、`web_history_chars` 字符，单条正文最多 8192 字符、单条 reasoning 最多 4096 字符。observation 记录会按“工具结果/执行结果/Harness 记录”逐条渲染为可折叠步骤，并与同一用户请求的 assistant reasoning、Native tool call 一起按发生顺序重建到同一个 turn 卡片中。串口 `/history` 打印当前 RAM 中的完整 `agent.history`，因此条数可能明显多于网页；网页在有截断时会显示 `最近 X/Y 条` 的提示。两者都来自同一份 `agent.history`，不是两份独立上下文；差异只来自网页响应预算。需要查看更多时可通过 `POST /api/config` 提高 `web_history_limit`（1–200）或 `web_history_chars`（1024–262144），或在串口使用 `/history`、`/context`。自动压缩或 `_trim_history` 之后，网页需要刷新历史才能看到压缩后的结果。
+网页对话视图加载的是 `/api/history` 的**有界最近窗口**：最多 `web_history_limit` 条、`web_history_chars` 字符，单条正文最多 8192 字符、单条 reasoning 最多 4096 字符。observation 记录会按“工具结果/执行结果/后台任务结果/Harness 记录”逐条渲染为可折叠步骤，并与同一用户请求的 assistant reasoning、Native tool call 一起按发生顺序重建到同一个 turn 卡片中；`Local ESP32 background execution result` 例外，它会开启新的 turn，与后续续答单独成组。串口 `/history` 打印当前 RAM 中的完整 `agent.history`，因此条数可能明显多于网页；网页在有截断时会显示 `最近 X/Y 条` 的提示。两者都来自同一份 `agent.history`，不是两份独立上下文；差异只来自网页响应预算。需要查看更多时可通过 `POST /api/config` 提高 `web_history_limit`（1–200）或 `web_history_chars`（1024–262144），或在串口使用 `/history`、`/context`。自动压缩或 `_trim_history` 之后，网页需要刷新历史才能看到压缩后的结果。
 
 | `ap_ssid_prefix` | `ESP32-Harness` | AP SSID 前缀 |
 | `ap_channel` | `6` | AP 信道 |
@@ -251,6 +256,7 @@ question, response, code, background, execution, skill, feedback, done, error
 | 网页对话一直忙 | 串口任务/另一次网页回合占用锁；串口只读命令可用。若刚点击“停止”，页面会等待设备真实回合结束，已开始的代码不能被强制取消 |
 | 后台卡片长时间停在 running | 代码仍在该任务的 worker 线程执行；`elapsed` 和 `timeout_s` 可见，`/background status ID` 可看输出尾部。协作式钩子会在截止时间停止；阻塞在 C/SPI 中或不调用钩子的后台任务无法协作停止，通常只能重启。期间对话、前台运行和状态轮询仍可用；回退和配置写入返回 409 |
 | 后台完成后没有自动继续 | AUTO 模式由设备主线程自动继续，不需要网页保持打开；检查 `auto_feedback` 是否关闭、`max_turns` 是否耗尽、模型/网络是否就绪。手动模式（AUTO 关闭）才会显示“继续 #N”和“丢弃结果”按钮，也可串口 `/continue [id]`。存在待执行代码、Skill 或问题时自动继续会等待。设备重启后可恢复 `/state/background.json` 中已完成的结果，未完成记录显示为 error |
+| 定时任务到点没有执行 | 先看“任务”页的“下次/上次”和 `last_error`：RTC 年份必须有效（NTP 已同步），任务必须启用，且设备当时不在模型回合、没有待执行代码/Skill/问题；设备离线或复位期间过期的任务会在下次空闲时补跑一次。代码任务只负责启动后台任务，执行失败会显示在后台结果里。连续失败 3 次后会停用一次性任务或回到下一个正常周期 |
 | 后台任务显示 queued 很久 | 同时运行数达到 `background_max_jobs`（默认 4）；等某个任务完成或停止/丢弃一个排队任务。可在设置页把并发数调到 1–4 |
 | 启动后台报 `can't create thread` | ESP-IDF 内部堆不足以创建 worker 栈。Harness 会在启动前关闭空闲 HTTPS 连接、GC，并依次尝试 32/24/16/12/8 KB 栈；仍失败时降低 `background_thread_stack_kb`（例如 16）或 `background_max_jobs`，减少同时任务后重试，必要时重启设备释放内部 RAM |
 | 停止后台程序后输出不完整 | 停止是协作式的，阻塞 C/SPI 调用不会立即返回；到检查点后结果标记 `cancelled`。后台输出由 `print()` 捕获，直接写 `sys.stdout` 的内容可能缺失 |

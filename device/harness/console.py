@@ -10,7 +10,7 @@ try:
 except ImportError:
     _thread = None
 
-from . import __version__
+from . import __version__, clock
 from .agent import (
     Agent,
     AgentError,
@@ -36,6 +36,7 @@ from .mcp import MCPManager, MCPStore
 from .memory import MemoryStore
 from .migration import migrate_legacy_skills
 from .recovery import Recovery, Supervisor
+from .schedule import ScheduleStore, Scheduler
 from .skills import SkillStore
 from .workspace import Workspace, WorkspaceError
 
@@ -84,8 +85,15 @@ HELP = """Commands:
   /background           List background jobs (ids, notes, elapsed time)
   /background status ID Show one job including output tail
   /background stop [ID] Request a cooperative stop (all jobs without ID)
+  /background stopdiscard [ID] Stop and drop the result (all jobs without ID)
   /background note ID TEXT  Set a job's short note
   /background discard ID    Discard a finished job and its result
+  /schedule             List scheduled tasks
+  /schedule status ID   Show one task
+  /schedule run ID      Queue a task when the device is idle
+  /schedule enable ID   Enable a task
+  /schedule disable ID  Disable a task
+  /schedule delete ID   Delete a task after confirmation
   /discard [ID]         Discard pending code/skill or a background result
   /skills               List saved skill packages
   /skill-show <name>    Show a skill's SKILL.md
@@ -388,6 +396,9 @@ def command_is_exclusive(line):
     if command in ("/background", "/bg"):
         return bool(args) and args[0].lower() not in (
             "list", "ls", "status", "show")
+    if command == "/schedule":
+        return bool(args) and args[0].lower() not in (
+            "list", "ls", "status", "show")
     return True
 
 
@@ -410,10 +421,11 @@ class LiveTurn:
         self.finished_ms = 0
         self.truncated = False
         self.turns = 0
+        self.separate_turn = False
         self.events = []
         self.events_dropped = 0
 
-    def begin(self):
+    def begin(self, separate_turn=False):
         self.id += 1
         self.active = True
         self.content = ""
@@ -422,6 +434,7 @@ class LiveTurn:
         self.finished_ms = 0
         self.truncated = False
         self.turns = 0
+        self.separate_turn = bool(separate_turn)
         self.events = []
         self.events_dropped = 0
 
@@ -478,6 +491,7 @@ class LiveTurn:
             "reasoning_chars": len(self.reasoning),
             "truncated": self.truncated,
             "turns": self.turns,
+            "separate_turn": bool(self.separate_turn),
         }
 
     def view(self):
@@ -522,6 +536,10 @@ class Application:
         self.live = LiveTurn(live_limit)
         self.reset_info = self._read_reset_cause()
         self.background_store = BackgroundStore(root, self.config)
+        self.schedule_store = ScheduleStore(root, self.config)
+        self.schedules = Scheduler(self.config, self.schedule_store)
+        self.schedule_seq = 0
+        self._schedule_running = False
         self.supervisor = supervisor or Supervisor(self.config.get("watchdog_ms"))
         self._serial_ui = SerialUI(self.idle)
         self.ui = UIRouter(self._serial_ui)
@@ -665,6 +683,7 @@ class Application:
         serial = getattr(self, "_serial_ui", None)
         if (getattr(self, "_at_prompt", False)
                 and (serial is None or not serial.has_pending_line())):
+            self.service_schedules()
             self.auto_continue_background()
         self._service_reboot()
 
@@ -683,6 +702,8 @@ class Application:
         if self.backgrounds is None:
             return None
         if getattr(self, "_auto_continue_running", False):
+            return None
+        if getattr(self, "_schedule_running", False):
             return None
         if _ticks_diff(
                 _ticks_ms(), getattr(self, "_auto_continue_retry_at", 0)) < 0:
@@ -717,7 +738,12 @@ class Application:
                 self.ui.line(
                     "AUTO: continuing background result #%s automatically."
                     % job.get("id", "?"))
-                self.live.begin()
+                self.live.begin(separate_turn=True)
+                self.live.add_event({
+                    "t": "notice",
+                    "d": "后台任务 #%s 已返回，开始新的回复。"
+                         % job.get("id", "?"),
+                })
                 try:
                     self.continue_background(job.get("id"))
                 finally:
@@ -737,6 +763,252 @@ class Application:
         finally:
             self._auto_continue_running = False
         return job
+
+    # -- scheduled tasks -------------------------------------------------
+    def _schedule_epoch(self):
+        value = clock.snapshot(self.config)
+        if not value.get("valid"):
+            raise RuntimeError(
+                "RTC time is not valid; connect Wi-Fi and synchronize NTP "
+                "before using scheduled tasks")
+        return value["epoch"]
+
+    def _schedule_epoch_or(self, fallback):
+        try:
+            return self._schedule_epoch()
+        except Exception:
+            return fallback
+
+    def service_schedules(self):
+        """Run one due scheduled task on the serial main thread.
+
+        Prompt tasks execute a normal agent turn (generated code still follows
+        AUTO/confirmation rules). Code tasks start stored source as a
+        background job. Recurring tasks are advanced only after a run, so a
+        reboot during a run retries instead of silently skipping it.
+        """
+        if not self.on_main_thread():
+            return None
+        if getattr(self, "_schedule_running", False):
+            return None
+        if getattr(self, "_auto_continue_running", False):
+            return None
+        scheduler = getattr(self, "schedules", None)
+        if scheduler is None:
+            return None
+        if self.is_turn_busy():
+            return None
+        agent = self.agent
+        if agent.has_pending() or getattr(agent, "pending_question", None) is not None:
+            return None
+        try:
+            value = clock.snapshot(self.config)
+        except Exception:
+            return None
+        if not value.get("valid"):
+            # A task set from a valid clock must not fire after a reset that
+            # left the RTC at its 2000-01-01 default.
+            return None
+        task = scheduler.due(value["epoch"])
+        if task is None:
+            return None
+
+        self._schedule_running = True
+        prompt_visible = bool(getattr(self, "_at_prompt", False))
+        try:
+            if task.get("type") == "code":
+                started = scheduler.begin_run(task["id"], value["epoch"])
+                if started is None:
+                    return None
+                try:
+                    self._require_background_execution()
+                    note = "Scheduled #%s: %s" % (
+                        started.get("id", "?"), started.get("name", ""))
+                    job = self._create_background_job(
+                        started.get("source"), started.get("timeout"),
+                        auto=bool(self.config.get("auto_run", False)),
+                        driver="schedule", note=note)
+                    scheduler.finish_run(
+                        started["id"], True, "background job #%s" % job.get(
+                            "id", "?"),
+                        self._schedule_epoch_or(value["epoch"]))
+                    self.queue_notice(
+                        "Scheduled task #%s started background job #%s."
+                        % (started.get("id", "?"), job.get("id", "?")))
+                except Exception as exc:
+                    scheduler.finish_run(
+                        started["id"], False, str(exc),
+                        self._schedule_epoch_or(value["epoch"]))
+                    self.queue_notice(
+                        "Scheduled task #%s failed to start: %s"
+                        % (started.get("id", "?"), exc))
+                finally:
+                    self.schedule_seq = int(
+                        getattr(self, "schedule_seq", 0) or 0) + 1
+                    if prompt_visible:
+                        self.drain_notices()
+                        self.ui.write(PROMPT)
+                return started
+
+            if not self.begin_operation("schedule"):
+                return None
+            try:
+                started = scheduler.begin_run(task["id"], value["epoch"])
+                if started is None:
+                    return None
+                task = started
+                if prompt_visible:
+                    self.ui.write("\n")
+                self.ui.line(
+                    "Scheduled task #%s (%s) is running."
+                    % (task.get("id", "?"), task.get("name", "")))
+                try:
+                    self.prepare_for_new_turn()
+                    self.prepare_cloud()
+                    self.live.begin(separate_turn=True)
+                    self.live.add_event({
+                        "t": "notice",
+                        "d": "定时任务 #%s「%s」开始执行。"
+                             % (task.get("id", "?"), task.get("name", "")),
+                    })
+                    try:
+                        explanation, has_code = agent.ask(
+                            self._scheduled_prompt(task))
+                        auto = bool(
+                            has_code and self.config.get("auto_run", False))
+                        if auto and not auto_source_is_safe(
+                                agent.pending_source):
+                            self.ui.line(
+                                "Auto-run blocked: scheduled code contains an "
+                                "obvious indefinite loop; review it and use "
+                                "/run if intended.")
+                            auto = False
+                        self.show_response(explanation, has_code, auto=auto)
+                        if auto:
+                            self.run_pending(auto=True)
+                    finally:
+                        self.live.finish()
+                except LLMStreamCancelled:
+                    scheduler.finish_run(
+                        task["id"], False, "cancelled by user",
+                        self._schedule_epoch_or(value["epoch"]))
+                    self.ui.line(
+                        "Scheduled task #%s cancelled."
+                        % task.get("id", "?"))
+                    return task
+                scheduler.finish_run(
+                    task["id"], True, "",
+                    self._schedule_epoch_or(value["epoch"]))
+                return task
+            except Exception as exc:
+                try:
+                    scheduler.finish_run(
+                        task["id"], False, str(exc),
+                        self._schedule_epoch_or(value["epoch"]))
+                except Exception:
+                    pass
+                self.queue_notice(
+                    "Scheduled task #%s failed: %s"
+                    % (task.get("id", "?"), exc))
+                return task
+            finally:
+                self.end_operation()
+                self.schedule_seq = int(
+                    getattr(self, "schedule_seq", 0) or 0) + 1
+                if prompt_visible:
+                    self.drain_notices()
+                    self.ui.write(PROMPT)
+        except Exception as exc:
+            self.queue_notice("Scheduled task error: %s" % exc)
+            return task
+        finally:
+            self._schedule_running = False
+
+    @staticmethod
+    def _scheduled_prompt(task):
+        return "[定时任务 #%s「%s」] %s" % (
+            task.get("id", "?"), task.get("name", ""),
+            task.get("prompt", ""))
+
+    def schedule_views(self):
+        scheduler = getattr(self, "schedules", None)
+        if scheduler is None:
+            return []
+        return scheduler.views()
+
+    def schedule_full_views(self):
+        scheduler = getattr(self, "schedules", None)
+        if scheduler is None:
+            return []
+        return [
+            scheduler.view(task.get("id"), full=True)
+            for task in scheduler.snapshot()
+        ]
+
+    def schedule_view(self, task_id, full=False):
+        scheduler = getattr(self, "schedules", None)
+        if scheduler is None:
+            return None
+        return scheduler.view(task_id, full=full)
+
+    def schedule_text(self, task_id, full=False):
+        scheduler = getattr(self, "schedules", None)
+        if scheduler is None:
+            return None
+        return scheduler.format_task(task_id, full=full)
+
+    def schedule_summary_lines(self):
+        scheduler = getattr(self, "schedules", None)
+        if scheduler is None:
+            return ["No scheduled tasks."]
+        return scheduler.summary_lines()
+
+    def create_schedule(self, fields):
+        return self.schedules.create(fields, self._schedule_epoch())
+
+    def update_schedule(self, task_id, fields):
+        return self.schedules.update(task_id, fields, self._schedule_epoch())
+
+    def delete_schedule(self, task_id):
+        return self.schedules.delete(task_id)
+
+    def set_schedule_enabled(self, task_id, enabled):
+        return self.schedules.set_enabled(task_id, enabled)
+
+    def request_schedule_run(self, task_id):
+        return self.schedules.request_run(task_id, self._schedule_epoch())
+
+    def rebase_schedules(self):
+        try:
+            return self.schedules.rebase_timezone(self._schedule_epoch())
+        except Exception:
+            return False
+
+    def restore_schedules(self):
+        scheduler = getattr(self, "schedules", None)
+        if scheduler is None:
+            return 0
+        try:
+            restored = scheduler.restore()
+        except Exception as exc:
+            self.queue_notice("Scheduled task restore failed: %s" % exc)
+            return 0
+        return len(restored or [])
+
+    def set_clock_time(self, epoch):
+        clock.write_rtc(epoch)
+        self.time_sync.retry_at = 0
+        return clock.snapshot(self.config)
+
+    def set_timezone_offset(self, minutes):
+        offset = int(minutes)
+        if offset < clock.MIN_OFFSET_MINUTES or offset > clock.MAX_OFFSET_MINUTES:
+            raise RuntimeError(
+                "timezone offset must be between %s and %s minutes"
+                % (clock.MIN_OFFSET_MINUTES, clock.MAX_OFFSET_MINUTES))
+        self.config.set("timezone_offset_minutes", offset)
+        self.rebase_schedules()
+        return clock.snapshot(self.config)
 
     def request_reboot(self, delay_ms=1000):
         """Schedule a main-thread reboot after the web response is sent."""
@@ -770,6 +1042,9 @@ class Application:
                 self.background_store.clear()
             except Exception:
                 pass
+        if getattr(self, "schedules", None) is not None:
+            self.schedules.clear()
+        self.schedule_seq = 0
         self.mcp.reload()
         return removed
 
@@ -953,11 +1228,17 @@ class Application:
             agent.restore_pending_source(source, timeout, recovered)
             raise
 
-    def stop_background(self, reason="", job_id=None):
-        """Request a cooperative stop of one or all background programs."""
+    def stop_background(self, reason="", job_id=None, discard=False):
+        """Request a cooperative stop of one or all background programs.
+
+        ``discard=True`` also drops the eventual result: queued jobs are
+        removed immediately and running jobs are removed when their worker
+        reaches a cooperative checkpoint.
+        """
         if self.backgrounds is None:
             return 0
-        return self.backgrounds.stop(job_id=job_id, reason=reason)
+        return self.backgrounds.stop(
+            job_id=job_id, reason=reason, discard=discard)
 
     def _commit_background_result(self, job):
         result = job.get("result")
@@ -1134,7 +1415,7 @@ class Application:
         if self.background_active() and source not in (
                 "web-chat", "web-run", "web-continue", "web-background-stop",
                 "web-background-discard", "web-discard", "web-save-skill",
-                "auto-continue", "serial"):
+                "auto-continue", "schedule", "serial"):
             return False
         if self.turn_lock is not None:
             if not self.turn_lock.acquire(False):
@@ -1204,6 +1485,11 @@ class Application:
                 "AUTO mode continues ready results automatically, otherwise "
                 "use /background and /continue or the web console to review."
                 % (len(views), restored_background.get("id", "?")))
+        restored_schedules = self.restore_schedules()
+        if restored_schedules:
+            self.ui.line(
+                "Restored %s scheduled task(s); use /schedule or the web "
+                "Tasks tab to review them." % restored_schedules)
         if recovered:
             self.ui.line("WARNING: previous generated code caused a reset. It is pending, NOT auto-run.")
         self.ui.line("Type /help for commands. Run /setup for first-time configuration.")
@@ -1338,6 +1624,8 @@ class Application:
             self.continue_background(args[0] if args else None)
         elif command in ("/background", "/bg"):
             self.background_command(args)
+        elif command == "/schedule":
+            self.schedule_command(args)
         elif command == "/discard":
             if len(args) > 1:
                 raise ValueError("Usage: /discard [background-job-id]")
@@ -2034,18 +2322,22 @@ class Application:
             if view.get("error"):
                 self.ui.line("error: %s" % view["error"][:500])
             return
-        if action in ("stop", "cancel"):
+        if action in ("stop", "cancel", "stopdiscard", "stop-discard",
+                      "stop_discard"):
+            discard = action != "stop" and action != "cancel"
             job_id = args[1] if len(args) > 1 else None
             target = self.background_view(job_id) if job_id is not None else None
             if target is not None and target.get("phase") == "none":
                 self.ui.line("No background job #%s." % job_id)
                 return
             count = self.stop_background(
-                "requested from serial", job_id=job_id)
+                "requested from serial", job_id=job_id, discard=discard)
             if count:
                 self.ui.line(
-                    "Stop requested for %s background job(s); it takes effect "
-                    "at the next cooperative checkpoint." % count)
+                    "Stop%s requested for %s background job(s); it takes "
+                    "effect at the next cooperative checkpoint.%s"
+                    % (" and discard" if discard else "", count,
+                       " Results will be dropped." if discard else ""))
             else:
                 self.ui.line("No running background job to stop.")
             return
@@ -2063,8 +2355,60 @@ class Application:
                 self.ui.line("Background job #%s discarded." % args[1])
             return
         raise ValueError(
-            "Usage: /background [list|status ID|stop [ID]|note ID TEXT|"
-            "discard ID]")
+            "Usage: /background [list|status ID|stop [ID]|stopdiscard [ID]|"
+            "note ID TEXT|discard ID]")
+
+    def schedule_command(self, args):
+        action = args[0].lower() if args else "list"
+        if action in ("list", "ls"):
+            for line in self.schedule_summary_lines():
+                self.ui.line(line)
+            return
+        if action in ("status", "show"):
+            if len(args) < 2:
+                for line in self.schedule_summary_lines():
+                    self.ui.line(line)
+                return
+            text = self.schedules.format_task(args[1], full=True)
+            if text is None:
+                self.ui.line("No scheduled task #%s." % args[1])
+                return
+            for line in text.split("\n"):
+                self.ui.line(line)
+            return
+        if action in ("run", "enable", "disable", "delete"):
+            if len(args) != 2:
+                raise ValueError("Usage: /schedule %s ID" % action)
+            task_id = args[1]
+            view = self.schedule_view(task_id)
+            if view is None:
+                self.ui.line("No scheduled task #%s." % task_id)
+                return
+            if action == "run":
+                self.request_schedule_run(task_id)
+                self.ui.line(
+                    "Scheduled task #%s queued; it runs when the device is "
+                    "idle and the RTC is valid." % task_id)
+                return
+            if action == "enable":
+                self.set_schedule_enabled(task_id, True)
+                self.ui.line("Scheduled task #%s enabled." % task_id)
+                return
+            if action == "disable":
+                self.set_schedule_enabled(task_id, False)
+                self.ui.line("Scheduled task #%s disabled." % task_id)
+                return
+            if not self.ui.ask_yes_no(
+                    "Delete scheduled task #%s '%s'?" % (
+                        task_id, view.get("name", "")), False):
+                self.ui.line("Scheduled task deletion cancelled.")
+                return
+            self.delete_schedule(task_id)
+            self.ui.line("Scheduled task #%s deleted." % task_id)
+            return
+        raise ValueError(
+            "Usage: /schedule [list|status ID|run ID|enable ID|disable ID|"
+            "delete ID]")
 
     def continue_background(self, job_id=None):
         job = None
@@ -2770,6 +3114,18 @@ class Application:
                         (job.get("note") or "-")[:60],
                         job.get("elapsed_ms", 0),
                         BackgroundPool.timeout_label(job.get("timeout_s"))))
+        scheduled = self.schedule_views()
+        if scheduled:
+            self.ui.line("Scheduled tasks: %s enabled, %s total" % (
+                sum(1 for task in scheduled if task.get("enabled")),
+                len(scheduled)))
+            for task in scheduled:
+                self.ui.line(
+                    "  #%s: %s; %s; next=%s" % (
+                        task.get("id"),
+                        "enabled" if task.get("enabled") else "disabled",
+                        task.get("when_label"),
+                        task.get("next_local")))
         self.ui.line("Saved skills: %s; history messages: %s" % (
             len(self.skills.list()), len(self.agent.history)))
         persistence = self.conversation.status()

@@ -129,9 +129,61 @@ INDEX_HTML = r"""<!doctype html>
       </form>
     </main>
 
+    <main id="tasksPane" class="pane tasks-pane" hidden>
+      <div class="tasks-inner">
+        <section class="settings-card">
+          <div class="card-head">
+            <h2>后台任务</h2>
+            <p class="hint">后台程序在独立线程运行；完成后可继续对话或丢弃结果。AUTO 模式下设备会自动继续结果。</p>
+          </div>
+          <div id="backgroundList" class="background-list"></div>
+        </section>
+        <section class="settings-card">
+          <div class="card-head">
+            <h2>定时任务</h2>
+            <p class="hint">按设备 RTC 的本地时间执行。一次性任务重启后仍保留；重复任务错过多次时只补跑一次。提示词任务会让 AI 在指定时间执行，代码任务在后台运行。</p>
+          </div>
+          <div id="scheduleList" class="schedule-list"></div>
+          <details id="scheduleEditor" class="schedule-editor">
+            <summary id="scheduleEditorSummary">新建定时任务</summary>
+            <p class="hint">时间使用设置页中的时区。代码任务拥有完整设备权限，保存前会再次确认。</p>
+            <label class="field">名称<input id="scheduleName" maxlength="48" autocomplete="off"></label>
+            <label class="field">类型
+              <select id="scheduleType">
+                <option value="prompt">提示词（到点后让 AI 执行）</option>
+                <option value="code">MicroPython 代码（后台运行）</option>
+              </select>
+            </label>
+            <label class="field" id="schedulePromptField">提示词<textarea id="schedulePrompt" rows="3" maxlength="2000"></textarea></label>
+            <label class="field" id="scheduleSourceField" hidden>代码<textarea id="scheduleSource" rows="6" maxlength="8192" spellcheck="false"></textarea></label>
+            <label class="field" id="scheduleTimeoutField" hidden>代码超时（秒，0 = 不限）<input id="scheduleTimeout" type="number" min="0" step="1" inputmode="numeric"></label>
+            <label class="field">执行方式
+              <select id="scheduleWhen">
+                <option value="once">一次性</option>
+                <option value="interval">按间隔重复</option>
+                <option value="daily">每天固定时间</option>
+              </select>
+            </label>
+            <div id="scheduleOnceFields">
+              <label class="field">延迟（秒）<input id="scheduleDelay" type="number" min="1" step="1" inputmode="numeric"></label>
+              <label class="field">或本地时间（YYYY-MM-DD HH:MM）<input id="scheduleAt" autocomplete="off" placeholder="2026-11-27 08:00"></label>
+            </div>
+            <label class="field" id="scheduleIntervalField" hidden>间隔（秒，至少 30）<input id="scheduleEvery" type="number" min="30" step="1" inputmode="numeric"></label>
+            <label class="field" id="scheduleDailyField" hidden>每天时间（HH:MM）<input id="scheduleDailyAt" autocomplete="off" placeholder="08:00"></label>
+            <label class="check"><input id="scheduleEnabled" type="checkbox" checked>启用</label>
+            <div class="button-row">
+              <button id="scheduleSaveBtn" type="button">创建任务</button>
+              <button id="scheduleCancelBtn" type="button" class="ghost" hidden>取消编辑</button>
+            </div>
+          </details>
+        </section>
+      </div>
+    </main>
+
     <nav class="tabs" aria-label="主导航">
       <button class="tab active" data-tab="chat" type="button">对话</button>
       <button class="tab" data-tab="commands" type="button">命令</button>
+      <button class="tab" data-tab="tasks" type="button">任务</button>
     </nav>
   </section>
 
@@ -445,6 +497,22 @@ details.reasoning pre,details.collapsible pre{max-height:240px;overflow:auto;whi
 .background-card{border-color:var(--accent);background:var(--panel-soft)}
 .background-job{border-top:1px solid var(--line);margin-top:8px;padding-top:8px}
 .background-job:first-of-type{border-top:0;margin-top:0;padding-top:0}
+.tasks-pane{padding:0}
+.tasks-inner{max-width:820px;margin:0 auto;padding:16px 12px calc(var(--tabs-h) + env(safe-area-inset-bottom) + 32px)}
+.background-list .background-card{border:0;background:transparent;box-shadow:none;padding:0;margin:0}
+.background-list .background-job{border-top:1px solid var(--line);margin-top:10px;padding-top:10px}
+.schedule-list{display:flex;flex-direction:column;gap:10px}
+.schedule-list .empty-hint{padding:4px 0}
+.schedule-job{border:1px solid var(--line);border-radius:var(--radius);padding:12px 14px;background:var(--panel-soft)}
+.schedule-job.disabled{opacity:.7}
+.schedule-job h4{font-size:15px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px}
+.schedule-job .schedule-meta{font-size:13px;color:var(--muted);line-height:1.55;white-space:pre-wrap;word-break:break-word}
+.schedule-job .schedule-preview{font-size:13px;color:var(--text-soft);margin-top:6px;white-space:pre-wrap;word-break:break-word}
+.schedule-job .actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.schedule-job .actions button{font-size:13px;padding:6px 10px;min-height:36px}
+.schedule-editor{margin-top:16px;border-top:1px solid var(--line);padding-top:12px}
+.schedule-editor summary{cursor:pointer;font-weight:700;color:var(--text-soft);padding:6px 0}
+.schedule-editor .field{margin-top:10px}
 .msg-actions{display:flex;justify-content:flex-end;gap:6px;margin-top:8px}
 .msg-actions .rewind-btn{font-size:12px;padding:4px 10px;min-height:28px;white-space:normal}
 .msg .rewind-btn{font-family:var(--font-sans)}
@@ -499,7 +567,7 @@ details.reasoning pre,details.collapsible pre{max-height:240px;overflow:auto;whi
 """
 
 APP_JS = r"""'use strict';
-var state = {status:null, config:null, mcp:null, streaming:false, current:null, reasoning:null, reasoningChars:0, setup:false, setupInfo:null, authed:false, pendingKey:null, pendingEl:null, lastWifiError:'', activeStream:null, behaviorSaving:false, historyLoaded:false, backgroundKey:null, backgroundEl:null, backgroundPhase:null, backgroundTimer:null, backgroundResuming:false, autoContinueSeq:null, autoBusyNotice:false, liveUserEl:null, liveSeq:null, liveContent:'', liveReasoning:'', liveEventIndex:0, liveTimer:null, livePolling:false, liveGen:0, turnEl:null, turnCard:null, turnSteps:null};
+var state = {status:null, config:null, mcp:null, streaming:false, current:null, reasoning:null, reasoningChars:0, setup:false, setupInfo:null, authed:false, pendingKey:null, pendingEl:null, lastWifiError:'', activeStream:null, behaviorSaving:false, historyLoaded:false, backgroundKey:null, backgroundEl:null, backgroundPhase:null, backgroundTimer:null, backgroundResuming:false, autoContinueSeq:null, autoBusyNotice:false, liveUserEl:null, liveSeq:null, liveContent:'', liveReasoning:'', liveEventIndex:0, liveTimer:null, livePolling:false, liveGen:0, turnEl:null, turnCard:null, turnSteps:null, scheduleKey:null, scheduleEditId:null, scheduleSeq:null};
 function $(id){return document.getElementById(id);}
 function setText(el,text){el.textContent = text == null ? '' : String(text);}
 function show(el, yes){el.hidden = !yes;}
@@ -755,13 +823,27 @@ function renderStatus(status){
   else if(!status.wifi_error){state.lastWifiError='';}
   maybeShowPending(status);
   syncBackground(status);
+  syncSchedules(status);
   var liveActive=!!(status.live&&status.live.active);
-  if(!state.streaming&&((status.turn_busy&&status.busy_source==='auto-continue')||liveActive)){
+  if(!state.streaming&&((status.turn_busy&&(status.busy_source==='auto-continue'||status.busy_source==='schedule'))||liveActive)){
     state.autoBusyNotice=false;
     startLivePoll();
   } else {
     state.autoBusyNotice=false;
     stopLivePoll();
+  }
+  var scheduleSeq=status.schedule_seq;
+  if(scheduleSeq!=null){
+    if(state.scheduleSeq==null){
+      state.scheduleSeq=scheduleSeq;
+    } else if(scheduleSeq!==state.scheduleSeq){
+      // A scheduled prompt turn ran on the device main thread. Pull the new
+      // history and task state even when the web tab was closed.
+      state.scheduleSeq=scheduleSeq;
+      if(state.historyLoaded&&!state.streaming){
+        refreshHistory().catch(function(){});
+      }
+    }
   }
   var continueSeq=status.auto&&status.auto.continue_seq;
   if(continueSeq!=null){
@@ -832,6 +914,11 @@ function pollLive(){
       state.liveSeq=data.id; state.liveContent=''; state.liveReasoning='';
       state.liveEventIndex=0;
       state.current=null; state.reasoning=null; state.reasoningChars=0;
+      if(data.separate_turn){
+        // A background result continuation or scheduled task is a new agent
+        // message even without a new user bubble in the live stream.
+        startTurn();
+      }
     }
     var content=data.content||'';
     var reasoning=data.reasoning||'';
@@ -929,6 +1016,10 @@ function backgroundBlocked(status){
 function stopBackgroundPoll(){if(state.backgroundTimer){clearTimeout(state.backgroundTimer);state.backgroundTimer=null;}}
 function pollBackground(){state.backgroundTimer=null;if(!state.authed||document.hidden)return;refreshStatus().catch(function(){});}
 function backgroundStateLabel(bg){
+  if(bg.phase==='queued'||bg.phase==='running'){
+    if(bg.discard_on_finish) return '停止并丢弃中';
+    if(bg.stop_requested) return '停止中';
+  }
   if(bg.phase==='queued') return '排队中';
   if(bg.phase==='running') return '运行中';
   if(bg.phase==='ready'){
@@ -937,9 +1028,14 @@ function backgroundStateLabel(bg){
   }
   return '失败';
 }
-function stopBackground(id){
-  if(!confirm('请求停止后台程序？只有执行到协作检查点的代码会停止；阻塞中的 C/SPI 调用可能只能等待看门狗。'))return;
-  post('/api/background/stop',id==null?{}:{id:id}).then(function(data){toast(data.message||'已请求停止');refreshStatus().catch(function(){});}).catch(function(err){toast(err.message);});
+function stopBackground(id, discard){
+  var message=discard
+    ? '请求停止后台程序并丢弃结果？停止仍依赖协作检查点；阻塞中的 C/SPI 调用可能只能等待看门狗，结果不会进入对话。'
+    : '请求停止后台程序？只有执行到协作检查点的代码会停止；阻塞中的 C/SPI 调用可能只能等待看门狗。';
+  if(!confirm(message))return;
+  var body=id==null?{}:{id:id};
+  if(discard) body.discard=true;
+  post('/api/background/stop',body).then(function(data){toast(data.message||'已请求停止');refreshStatus().catch(function(){});}).catch(function(err){toast(err.message);});
 }
 function discardBackground(id){
   if(state.streaming)return;
@@ -955,6 +1051,9 @@ function autoContinueBackground(jobId){
   if(backgroundBlocked(state.status)) return;
   state.backgroundResuming=true;
   stopBackgroundPoll();
+  // The continuation is a separate agent message, not part of the previous
+  // answer bubble.
+  startTurn();
   stream('/api/continue',{id:jobId}).then(function(){
     state.backgroundResuming=false;
     setTimeout(function(){refreshStatus().catch(function(){});},300);
@@ -977,9 +1076,12 @@ function backgroundJobEl(bg){
   var note=document.createElement('p'); note.className='hint';
   note.textContent='备注: '+((bg.note||bg.task||'').slice(0,160)||'<无>');
   wrap.appendChild(note);
-  if(bg.phase==='running'&&bg.stop_requested){
+  if((bg.phase==='running'||bg.phase==='queued')&&bg.stop_requested){
     var stopping=document.createElement('p'); stopping.className='hint';
-    stopping.textContent='停止请求已发送，等待协作检查点。'; wrap.appendChild(stopping);
+    stopping.textContent=bg.discard_on_finish
+      ? '已请求停止并丢弃结果，等待协作检查点；结果不会写入对话。'
+      : '停止请求已发送，等待协作检查点。';
+    wrap.appendChild(stopping);
   }
   if(bg.phase==='ready'&&bg.result){
     var output=(bg.result.output||'')+(bg.result.error?'\n'+bg.result.error:'');
@@ -990,11 +1092,19 @@ function backgroundJobEl(bg){
     err.textContent='错误: '+bg.error.slice(0,240); wrap.appendChild(err);
   }
   var actions=document.createElement('div'); actions.className='actions';
-  if(backgroundRunning(bg)&&!bg.stop_requested){
-    var stop=document.createElement('button'); stop.type='button'; stop.className='ghost';
-    stop.textContent='停止 #'+bg.id;
-    stop.onclick=function(){stopBackground(bg.id);};
-    actions.appendChild(stop);
+  if(backgroundRunning(bg)){
+    if(!bg.stop_requested){
+      var stop=document.createElement('button'); stop.type='button'; stop.className='ghost';
+      stop.textContent='停止 #'+bg.id;
+      stop.onclick=function(){stopBackground(bg.id,false);};
+      actions.appendChild(stop);
+    }
+    if(!bg.discard_on_finish){
+      var stopDiscard=document.createElement('button'); stopDiscard.type='button'; stopDiscard.className='danger';
+      stopDiscard.textContent='停止并丢弃 #'+bg.id;
+      stopDiscard.onclick=function(){stopBackground(bg.id,true);};
+      actions.appendChild(stopDiscard);
+    }
   }
   if(bg.phase==='ready'&&bg.result){
     var autoState=state.status&&state.status.auto||{};
@@ -1025,8 +1135,15 @@ function backgroundJobEl(bg){
   if(actions.childNodes.length) wrap.appendChild(actions);
   return wrap;
 }
+function backgroundEmptyHint(){
+  var host=$('backgroundList'); if(!host) return;
+  host.textContent='';
+  var p=document.createElement('p'); p.className='hint empty-hint';
+  p.textContent='暂无后台任务。可以让助手在后台运行长时间程序。';
+  host.appendChild(p);
+}
 function rebuildBackgroundBody(el,jobs){
-  while(el.childNodes.length>1) el.removeChild(el.lastChild);
+  el.textContent='';
   var blocked=backgroundBlocked(state.status);
   var active=jobs.filter(backgroundRunning).length;
   var hint=document.createElement('p'); hint.className='hint';
@@ -1043,22 +1160,30 @@ function rebuildBackgroundBody(el,jobs){
     var all=document.createElement('div'); all.className='actions';
     var stopAll=document.createElement('button'); stopAll.type='button'; stopAll.className='ghost';
     stopAll.textContent='停止全部后台程序';
-    stopAll.onclick=function(){stopBackground(null);};
-    all.appendChild(stopAll); el.appendChild(all);
+    stopAll.onclick=function(){stopBackground(null,false);};
+    all.appendChild(stopAll);
+    var stopDiscardAll=document.createElement('button'); stopDiscardAll.type='button'; stopDiscardAll.className='danger';
+    stopDiscardAll.textContent='停止并丢弃全部';
+    stopDiscardAll.onclick=function(){stopBackground(null,true);};
+    all.appendChild(stopDiscardAll);
+    el.appendChild(all);
   }
 }
 function renderBackgroundCard(jobs){
-  var key=jobs.map(function(bg){return bg.id+':'+bg.phase+':'+(bg.stop_requested?'s':'')+':'+(bg.result?bg.result.elapsed_ms:0)+':'+(bg.note||'')+':'+(bg.error||'');}).join('|');
-  if(state.backgroundKey!==key || !state.backgroundEl || !document.body.contains(state.backgroundEl)){
+  var host=$('backgroundList'); if(!host) return;
+  var key=jobs.map(function(bg){return bg.id+':'+bg.phase+':'+(bg.stop_requested?'s':'')+':'+(bg.discard_on_finish?'d':'')+':'+(bg.result?bg.result.elapsed_ms:0)+':'+(bg.note||'')+':'+(bg.error||'');}).join('|');
+  if(state.backgroundKey!==key || !state.backgroundEl || !host.contains(state.backgroundEl)){
     if(state.backgroundEl) state.backgroundEl.remove();
-    var el=card('后台任务 ('+jobs.length+')');
-    el.classList.add('background-card');
+    host.textContent='';
+    var el=document.createElement('div');
+    el.className='background-card';
     state.backgroundKey=key; state.backgroundEl=el;
+    host.appendChild(el);
     rebuildBackgroundBody(el,jobs);
     return;
   }
   // Update only the elapsed counter between structural rebuilds, so open
-  // output drawers and chat scroll position survive status polling.
+  // output drawers and scroll position survive status polling.
   jobs.forEach(function(bg){
     var row=state.backgroundEl.querySelector('[data-job-id="'+bg.id+'"]');
     if(!row) return;
@@ -1071,6 +1196,7 @@ function syncBackground(status){
   if(!jobs.length){
     stopBackgroundPoll();
     if(state.backgroundEl){state.backgroundEl.remove();state.backgroundEl=null;state.backgroundKey=null;}
+    backgroundEmptyHint();
     return;
   }
   renderBackgroundCard(jobs);
@@ -1104,6 +1230,187 @@ function syncBackground(status){
     if(autoJob&&feedback&&!deviceAuto) autoContinueBackground(autoJob.id);
   }
 }
+function scheduleHumanSeconds(value){
+  value=parseInt(value,10)||0;
+  if(value>=86400&&value%86400===0) return (value/86400)+' 天';
+  if(value>=3600&&value%3600===0) return (value/3600)+' 小时';
+  if(value>=60&&value%60===0) return (value/60)+' 分钟';
+  return value+' 秒';
+}
+function scheduleWhenLabel(task){
+  if(task.when==='once') return task.at_text?('一次 · '+task.at_text):('一次 · 延迟 '+scheduleHumanSeconds(task.delay_s));
+  if(task.when==='interval') return '每 '+scheduleHumanSeconds(task.every_s)+' 重复';
+  return '每天 '+task.at_text;
+}
+function scheduleStateLabel(task){
+  if(task.running) return '执行中';
+  if(!task.enabled){
+    return (task.when==='once'&&task.last_status==='ok')?'已完成':'已停用';
+  }
+  if(task.last_status==='error') return '上次失败';
+  return '已启用';
+}
+function scheduleEmptyHint(){
+  var host=$('scheduleList'); if(!host) return;
+  host.textContent='';
+  var p=document.createElement('p'); p.className='hint empty-hint';
+  p.textContent='暂无定时任务。可以新建任务，也可以直接让助手“10 分钟后提醒我”。';
+  host.appendChild(p);
+}
+function renderScheduleRow(task){
+  var row=document.createElement('div');
+  row.className='schedule-job'+(task.enabled?'':' disabled');
+  row.setAttribute('data-schedule-id',String(task.id));
+  var head=document.createElement('h4');
+  head.appendChild(document.createTextNode('#'+task.id+' · '+(task.name||'未命名')+' '));
+  var badge=document.createElement('span');
+  badge.className='badge'+(task.enabled?'':' soft');
+  badge.textContent=scheduleStateLabel(task);
+  head.appendChild(badge);
+  row.appendChild(head);
+  var meta=document.createElement('div'); meta.className='schedule-meta';
+  var lines=[];
+  lines.push((task.type==='prompt'?'提示词任务':'代码任务')+' · '+scheduleWhenLabel(task));
+  lines.push('下次: '+(task.next_local||'-'));
+  lines.push('上次: '+(task.last_local||'从未')+(task.last_status?(' · '+task.last_status):'')+' · 已运行 '+(task.run_count||0)+' 次');
+  meta.textContent=lines.join('\n'); row.appendChild(meta);
+  if(task.preview){
+    var preview=document.createElement('div'); preview.className='schedule-preview';
+    preview.textContent=task.preview; row.appendChild(preview);
+  }
+  if(task.last_status==='error'&&task.last_error){
+    var error=document.createElement('p'); error.className='hint';
+    error.textContent='上次错误: '+task.last_error.slice(0,240); row.appendChild(error);
+  }
+  var actions=document.createElement('div'); actions.className='actions';
+  if(!task.running){
+    var run=document.createElement('button'); run.type='button'; run.textContent='立即运行';
+    run.onclick=function(){scheduleAction('run',task.id);}; actions.appendChild(run);
+  }
+  var toggle=document.createElement('button'); toggle.type='button'; toggle.className='ghost';
+  toggle.textContent=task.enabled?'停用':'启用';
+  toggle.onclick=function(){scheduleAction(task.enabled?'disable':'enable',task.id);};
+  actions.appendChild(toggle);
+  var edit=document.createElement('button'); edit.type='button'; edit.className='ghost';
+  edit.textContent='编辑'; edit.onclick=function(){editSchedule(task.id);};
+  actions.appendChild(edit);
+  var remove=document.createElement('button'); remove.type='button'; remove.className='danger';
+  remove.textContent='删除'; remove.onclick=function(){scheduleAction('delete',task.id);};
+  actions.appendChild(remove);
+  row.appendChild(actions);
+  return row;
+}
+function syncSchedules(status){
+  var tasks=(status&&status.schedules)||[];
+  var host=$('scheduleList'); if(!host) return;
+  var key=tasks.map(function(task){
+    return [task.id,task.enabled?'1':'0',task.running?'r':'',task.next_run,task.last_run,task.last_status,task.run_count,task.name,task.type,task.when,task.at_text,task.delay_s,task.every_s,task.last_error].join(':');
+  }).join('|');
+  if(state.scheduleKey===key) return;
+  state.scheduleKey=key;
+  host.textContent='';
+  if(!tasks.length){scheduleEmptyHint();return;}
+  tasks.forEach(function(task){host.appendChild(renderScheduleRow(task));});
+}
+function syncScheduleForm(){
+  var type=$('scheduleType').value;
+  show($('schedulePromptField'),type==='prompt');
+  show($('scheduleSourceField'),type==='code');
+  show($('scheduleTimeoutField'),type==='code');
+  var when=$('scheduleWhen').value;
+  show($('scheduleOnceFields'),when==='once');
+  show($('scheduleIntervalField'),when==='interval');
+  show($('scheduleDailyField'),when==='daily');
+}
+function resetScheduleForm(closeEditor){
+  state.scheduleEditId=null;
+  $('scheduleEditorSummary').textContent='新建定时任务';
+  $('scheduleSaveBtn').textContent='创建任务';
+  show($('scheduleCancelBtn'),false);
+  $('scheduleName').value='';
+  $('schedulePrompt').value='';
+  $('scheduleSource').value='';
+  $('scheduleTimeout').value='';
+  $('scheduleDelay').value='';
+  $('scheduleAt').value='';
+  $('scheduleEvery').value='';
+  $('scheduleDailyAt').value='';
+  $('scheduleEnabled').checked=true;
+  $('scheduleType').value='prompt';
+  $('scheduleWhen').value='once';
+  syncScheduleForm();
+  if(closeEditor) $('scheduleEditor').open=false;
+}
+function editSchedule(id){
+  api('/api/schedules?id='+encodeURIComponent(id)).then(function(data){
+    var task=(data.tasks||[])[0];
+    if(!task){toast('任务不存在');return;}
+    state.scheduleEditId=task.id;
+    $('scheduleEditor').open=true;
+    $('scheduleEditorSummary').textContent='编辑定时任务 #'+task.id;
+    $('scheduleSaveBtn').textContent='保存修改';
+    show($('scheduleCancelBtn'),true);
+    $('scheduleName').value=task.name||'';
+    $('scheduleType').value=task.type||'prompt';
+    $('schedulePrompt').value=task.prompt||'';
+    $('scheduleSource').value=task.source||'';
+    $('scheduleTimeout').value=task.timeout_s==null?'':task.timeout_s;
+    $('scheduleWhen').value=task.when||'once';
+    $('scheduleDelay').value='';
+    $('scheduleAt').value=(task.when==='once')?(task.next_input||task.at_text||''):'';
+    $('scheduleEvery').value=task.every_s||'';
+    $('scheduleDailyAt').value=task.when==='daily'?(task.at_text||''):'';
+    $('scheduleEnabled').checked=task.enabled!==false;
+    syncScheduleForm();
+    try{$('scheduleEditor').scrollIntoView({behavior:'smooth',block:'start'});}catch(e){}
+  }).catch(function(err){toast(err.message);});
+}
+function scheduleAction(action,id){
+  if(action==='delete'&&!confirm('删除定时任务 #'+id+'？')) return;
+  post('/api/schedules',{action:action,id:id}).then(function(data){
+    toast(data.message||'已提交');
+    refreshStatus().catch(function(){});
+  }).catch(function(err){toast(err.message);});
+}
+function saveSchedule(){
+  var type=$('scheduleType').value;
+  var when=$('scheduleWhen').value;
+  var body={action:state.scheduleEditId?'update':'create',name:$('scheduleName').value.trim(),type:type,when:when,enabled:$('scheduleEnabled').checked};
+  if(state.scheduleEditId) body.id=state.scheduleEditId;
+  if(type==='prompt'){
+    body.prompt=$('schedulePrompt').value.trim();
+    if(!body.prompt){toast('请输入提示词');return;}
+  } else {
+    body.source=$('scheduleSource').value;
+    if(!body.source.trim()){toast('请输入代码');return;}
+    var timeout=parseInt($('scheduleTimeout').value,10);
+    body.timeout=isFinite(timeout)&&timeout>=0?timeout:null;
+  }
+  if(when==='once'){
+    var at=$('scheduleAt').value.trim();
+    var delay=parseInt($('scheduleDelay').value,10);
+    if(at) body.at=at;
+    else if(isFinite(delay)&&delay>0) body.delay_s=delay;
+    else {toast('请填写延迟秒数或本地时间');return;}
+  } else if(when==='interval'){
+    var every=parseInt($('scheduleEvery').value,10);
+    if(!isFinite(every)||every<30){toast('重复间隔至少 30 秒');return;}
+    body.every_s=every;
+  } else {
+    var daily=$('scheduleDailyAt').value.trim();
+    if(!daily){toast('请填写每天时间（HH:MM）');return;}
+    body.at=daily;
+  }
+  if(type==='code'){
+    if(!confirm('代码任务会在后台自动执行并拥有完整设备权限。确定保存？')) return;
+    body.confirm=true;
+  }
+  post('/api/schedules',body).then(function(data){
+    toast(data.message||'已保存');
+    resetScheduleForm(true);
+    refreshStatus().catch(function(){});
+  }).catch(function(err){toast(err.message);});
+}
 function refreshHistory(){
   if(state.streaming) return Promise.resolve();
   stopLivePoll(); state.liveSeq=null; state.liveContent=''; state.liveReasoning=''; state.liveEventIndex=0;
@@ -1114,6 +1421,12 @@ function refreshHistory(){
     function renderObservation(content){
       var label='本地记录';
       if(content.indexOf("Local tool result for '")===0) label='工具结果';
+      else if(content.indexOf('Local ESP32 background execution result')===0){
+        label='后台任务结果';
+        // A completed background job starts a new agent turn even though its
+        // observation is stored as a user-role message.
+        startTurn();
+      }
       else if(content.indexOf('Local ESP32')===0) label='执行结果';
       else if(content.indexOf('Local harness event')===0) label='Harness 记录';
       collapsedMessage(label,content);
@@ -1667,11 +1980,18 @@ document.addEventListener('DOMContentLoaded',function(){
   };
   $('testWifiBtn').onclick=function(){post('/api/test',{kind:'wifi'}).then(function(data){toast(data.ok?'Wi-Fi 正常':'Wi-Fi 异常');}).catch(function(e){toast(e.message);});};
   $('testApiBtn').onclick=function(){post('/api/test',{kind:'api'}).then(function(data){toast(data.ok?'API 正常':'API 异常');}).catch(function(e){toast(e.message);});};
-  document.querySelectorAll('.tab').forEach(function(tab){tab.onclick=function(){document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active');});tab.classList.add('active');var name=tab.getAttribute('data-tab');show($('chatPane'),name==='chat');show($('commandsPane'),name==='commands');scrollPageBottomSoon();};});
+  $('scheduleType').onchange=syncScheduleForm;
+  $('scheduleWhen').onchange=syncScheduleForm;
+  $('scheduleSaveBtn').onclick=saveSchedule;
+  $('scheduleCancelBtn').onclick=function(){resetScheduleForm(true);};
+  document.querySelectorAll('.tab').forEach(function(tab){tab.onclick=function(){document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active');});tab.classList.add('active');var name=tab.getAttribute('data-tab');show($('chatPane'),name==='chat');show($('commandsPane'),name==='commands');show($('tasksPane'),name==='tasks');if(name==='tasks'&&state.status){syncBackground(state.status);syncSchedules(state.status);}scrollPageBottomSoon();};});
   setInterval(function(){if(state.authed && !state.streaming && !document.hidden){refreshStatus().catch(function(){});}},5000);
   document.addEventListener('visibilitychange',function(){
     if(!document.hidden && state.authed && !state.streaming){refreshStatus().catch(function(){});}
   });
+  syncScheduleForm();
+  backgroundEmptyHint();
+  scheduleEmptyHint();
   boot();
 });
 """

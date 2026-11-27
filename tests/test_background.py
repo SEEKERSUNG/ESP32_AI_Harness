@@ -203,6 +203,51 @@ class BackgroundPoolTests(unittest.TestCase):
         self.assertTrue(a["result"].cancelled)
         self.assertTrue(b["result"].cancelled)
 
+    def test_stop_and_discard_queued_job_removes_it(self):
+        pool = self.make_pool(background_max_jobs=1)
+        self.release["wait-blocker"] = threading.Event()
+        running = pool.create("wait-blocker", 0)
+        queued = pool.create("never", 0)
+        self.assertEqual("queued", queued["phase"])
+        self.assertEqual(
+            1, pool.stop(job_id=queued["id"], reason="discard",
+                         discard=True))
+        ids = [job["id"] for job in pool.snapshot()]
+        self.assertNotIn(queued["id"], ids)
+        self.assertIn(running["id"], ids)
+        self.assertTrue(any(
+            "discarded" in notice for notice in self.notices))
+        self.release["wait-blocker"].set()
+        self.wait_phase(running, "ready")
+
+    def test_stop_and_discard_running_job_drops_result(self):
+        pool = self.make_pool()
+        job = pool.create("stop-me", 0)
+        self.assertEqual(
+            1, pool.stop(job_id=job["id"], reason="discard", discard=True))
+        self.assertTrue(wait_for(
+            lambda: not pool.has_active() and not pool.snapshot(), 5),
+            (job, pool.views()))
+        self.assertEqual([], pool.views())
+        self.assertTrue(any(
+            "discarded" in notice for notice in self.notices))
+        self.assertFalse(any(
+            job.get("phase") == "ready" for job in pool.snapshot()))
+
+    def test_stop_and_discard_all_removes_multiple_queued_jobs(self):
+        pool = self.make_pool(background_max_jobs=1)
+        running = pool.create("stop-me", 0)
+        first = pool.create("never-a", 0)
+        second = pool.create("never-b", 0)
+        self.assertEqual(
+            3, pool.stop(reason="discard all", discard=True))
+        remaining = [job["id"] for job in pool.snapshot()]
+        self.assertNotIn(first["id"], remaining)
+        self.assertNotIn(second["id"], remaining)
+        self.assertTrue(wait_for(
+            lambda: not pool.has_active() and not pool.snapshot(), 5),
+            (running, pool.views()))
+
     def test_take_commits_once_and_only_by_id(self):
         pool = self.make_pool()
         first = pool.create("one", 0)
@@ -348,6 +393,20 @@ class BackgroundPoolTests(unittest.TestCase):
         self.assertEqual("ready", by_id[2]["phase"])
         self.assertEqual("ok", by_id[2]["result"].output)
         self.assertEqual(2, pool.seq)
+
+    def test_restore_drops_stop_and_discard_records(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        store = BackgroundStore(root, self.config())
+        store.save_jobs([{
+            "id": 3, "token": "3@3", "phase": "running", "timeout": 0,
+            "source_chars": 3, "task": "discard", "note": "discard",
+            "turns": 1, "discard_on_finish": True,
+        }])
+        pool = BackgroundPool(
+            self.config(), store, self.execute, notify=self.notices.append)
+        self.assertEqual([], pool.restore())
+        self.assertEqual([], pool.snapshot())
 
     def test_restore_keeps_ready_results_when_max_records_is_lowered(self):
         root = tempfile.mkdtemp()

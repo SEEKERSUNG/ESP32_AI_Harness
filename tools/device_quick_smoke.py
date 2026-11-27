@@ -30,6 +30,7 @@ from harness.agent import (
     system_prompt,
 )
 from harness.clock import format_snapshot, snapshot
+from harness.schedule import ScheduleStore, Scheduler
 from harness.config import Config
 from harness.console import Application
 from harness.device import Board
@@ -122,7 +123,7 @@ def run():
         config, workspace=object(), memory=object())
     names = [tool["name"] for tool in native]
     assert "__workspace" in names and "__ask" in names, names
-    assert "__time" in names, names
+    assert "__time" in names and "__schedule" in names, names
     workspace_tool = [
         tool for tool in native if tool["name"] == "__workspace"][0]
     assert "background" in workspace_tool["parameters"]["properties"]
@@ -141,6 +142,8 @@ def run():
     assert "search_provider_effective" in APP_JS
     assert "questions" in APP_JS or "question" in APP_JS
     assert "background" in APP_JS and "rewind" in APP_JS
+    assert "tasksPane" in INDEX_HTML and "scheduleList" in INDEX_HTML
+    assert "/api/schedules" in APP_JS and "syncSchedules" in APP_JS
     assert "harness" in INDEX_HTML.lower()
 
     client = OpenAIClient(config)
@@ -173,6 +176,18 @@ def run():
     time_result = agent._execute_tool({"name": "__time", "args": {}})
     assert time_result.ok and "timezone:" in time_result.output, (
         time_result.observation())
+    schedule_store = ScheduleStore("/", config)
+    assert schedule_store.path.endswith("/schedules.json")
+    scheduler = Scheduler(config, None)
+    now = snapshot(config)["epoch"]
+    scheduled = scheduler.create({
+        "type": "prompt", "name": "quick schedule",
+        "prompt": "quick scheduled task", "when": "once", "delay_s": 600,
+    }, now)
+    assert scheduled["next_run"] == now + 600, scheduled
+    assert "once" in scheduler.view(scheduled["id"])["when_label"]
+    scheduler.delete(scheduled["id"])
+    assert not scheduler.snapshot()
     for count in (8, 9):
         result = agent._ask_user({
             "question": "pick",
@@ -394,6 +409,29 @@ def run():
         shell.take_background_result(stoppable["id"])
         assert "status=cancelled" in shell.agent.history[-1]["content"]
         assert "cooperative" in shell.agent.history[-1]["content"]
+
+        shell.agent.pending_source = (
+            "import time\n"
+            "for i in range(200):\n"
+            "    time.sleep_ms(10)\n")
+        shell.agent.pending_timeout = 5
+        discard_job = shell.start_background(
+            auto=False, driver="serial", note="discard-me")
+        assert discard_job["phase"] == "running", discard_job.get("error")
+        assert shell.stop_background(
+            "quick smoke discard", job_id=discard_job["id"], discard=True)
+        assert discard_job["discard_on_finish"]
+        guard = 0
+        while (shell.background_view(discard_job["id"]).get("phase")
+               != "none" and guard < 300):
+            if hasattr(time, "sleep_ms"):
+                time.sleep_ms(20)
+            else:
+                time.sleep(0.02)
+            guard += 1
+        assert shell.background_view(discard_job["id"])["phase"] == "none"
+        assert discard_job["id"] not in [
+            view["id"] for view in shell.background_views()]
 
         # With one slot, the queued task must start from the finishing
         # worker's _launch_next path (a thread creating another thread).

@@ -282,6 +282,7 @@ class BackgroundStore:
             "started_ms": int(job.get("started_ms", 0) or 0),
             "finished_ms": int(job.get("finished_ms", 0) or 0),
             "stop_reason": str(job.get("stop_reason", ""))[:120],
+            "discard_on_finish": bool(job.get("discard_on_finish", False)),
             "error": str(job.get("error", ""))[:self.ERROR_LIMIT],
             "result": self._serialize_result(job.get("result")),
         }
@@ -323,6 +324,7 @@ class BackgroundStore:
             "finished_ms": 0,
             "stop_requested": False,
             "stop_reason": str(job.get("stop_reason", ""))[:120],
+            "discard_on_finish": bool(job.get("discard_on_finish", False)),
             "error": error,
             "result": None,
         }

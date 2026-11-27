@@ -326,7 +326,8 @@ def parse_tool_call(text, args_limit=2048, large_args_limit=None,
     if args is None:
         args = {}
     if name not in ("__skill", "__workspace", "__memory", "__search",
-                    "__ask", "__http", "__background", "__time"):
+                    "__ask", "__http", "__background", "__time",
+                    "__schedule"):
         if not name.startswith("mcp__"):
             try:
                 validate_name(name)
@@ -348,6 +349,10 @@ def parse_tool_call(text, args_limit=2048, large_args_limit=None,
         action = str(args.get("action", "list")).lower()
         limit = (background_args_limit
                  if action in ("start", "run", "auto") else args_limit)
+    elif name == "__schedule" and background_args_limit:
+        # A scheduled code task carries source; a prompt task can carry up to
+        # 2000 characters. Reuse the larger background budget.
+        limit = background_args_limit
     elif name.startswith("mcp__") and mcp_args_limit:
         limit = mcp_args_limit
     else:
@@ -586,9 +591,11 @@ def system_prompt(config, board, workspace=False):
         "program that should run until stopped, use timeout=0 or timeout=infinite on "
         "the opening fence; this is honored only for background execution and still "
         "needs cooperative checkpoints and a stop request. "
-        "Long loops must call __harness_check() at least once per second; range() and "
-        "time.sleep() are checked automatically. A timeout stops only the current exec, "
-        "reports status=timeout without rebooting the device, and does not stop Python "
+        "range() loops, every while loop condition and time.sleep() are checked "
+        "automatically. A long for loop over another iterable, or one iteration that "
+        "blocks for many seconds, still needs an explicit __harness_check() at least "
+        "once per second. A timeout stops only the current exec, reports "
+        "status=timeout without rebooting the device, and does not stop Python "
         "threads started by earlier code; stop those explicitly. Foreground code that "
         "blocks without these hooks may be reset by the 30-second hardware watchdog. "
         "A background worker does not feed the watchdog and cannot be hard-killed: if "
@@ -1112,10 +1119,30 @@ def native_tool_definitions(config, skills=None, workspace=None, memory=None,
         ),
         _tool_schema(
             "__time",
-            "Show the board's current date and time from its RTC, converted "
-            "to the configured UTC offset. Use this whenever the user asks "
-            "for the current time or date; never guess it.",
-            {},
+            "Read or change the board clock. action=read (default) returns the "
+            "RTC in UTC and in the configured UTC offset. action=set writes "
+            "the RTC from at (local YYYY-MM-DD HH:MM[:SS]) or epoch (UTC "
+            "seconds). action=timezone saves timezone_offset_minutes "
+            "(-720..840). Use read whenever the user asks for the current "
+            "time or date; never guess it.",
+            {
+                "action": {
+                    "type": "string",
+                    "enum": ["read", "set", "timezone"],
+                },
+                "at": {
+                    "type": "string",
+                    "description": "Local YYYY-MM-DD HH:MM[:SS] for action=set.",
+                },
+                "epoch": {
+                    "type": "integer",
+                    "description": "UTC epoch seconds for action=set.",
+                },
+                "timezone_offset_minutes": {
+                    "type": "integer",
+                    "description": "Fixed UTC offset for action=timezone; -720..840.",
+                },
+            },
         ),
         _tool_schema(
             "__background",
@@ -1123,11 +1150,12 @@ def native_tool_definitions(config, skills=None, workspace=None, memory=None,
             "use action=start only for long-running work or when the user asks "
             "for background. In AUTO mode it runs MicroPython source on a worker "
             "thread; outside AUTO mode return a python block for confirmation "
-            "instead. stop is cooperative.",
+            "instead. stop is cooperative; stop_discard also drops the result.",
             {
                 "action": {
                     "type": "string",
-                    "enum": ["list", "status", "stop", "note", "discard", "start"],
+                    "enum": ["list", "status", "stop", "stop_discard", "note",
+                             "discard", "start"],
                 },
                 "id": {"type": "integer", "description": "Job id."},
                 "text": {"type": "string", "description": "New job note."},
@@ -1137,6 +1165,58 @@ def native_tool_definitions(config, skills=None, workspace=None, memory=None,
                     "type": "integer",
                     "description": "Seconds; 0 means intentional infinite.",
                 },
+            },
+            ["action"],
+        ),
+        _tool_schema(
+            "__schedule",
+            "Create and manage scheduled tasks stored on the board. A prompt "
+            "task runs an agent turn at the scheduled wall-clock time; a code "
+            "task starts stored MicroPython source as a background job. Times "
+            "use the configured UTC offset. once uses delay_s or at "
+            "(YYYY-MM-DD HH:MM); interval uses every_s; daily uses at (HH:MM). "
+            "List before updating, running or deleting; ids are integers.",
+            {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "get", "create", "update", "delete",
+                             "enable", "disable", "run"],
+                },
+                "id": {"type": "integer", "description": "Task id."},
+                "name": {"type": "string", "description": "Short task name."},
+                "type": {
+                    "type": "string",
+                    "enum": ["prompt", "code"],
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "Instruction for a prompt task.",
+                },
+                "source": {
+                    "type": "string",
+                    "description": "MicroPython source for a code task.",
+                },
+                "when": {
+                    "type": "string",
+                    "enum": ["once", "interval", "daily"],
+                },
+                "delay_s": {
+                    "type": "integer",
+                    "description": "Seconds from now for a one-time task.",
+                },
+                "at": {
+                    "type": "string",
+                    "description": "Local YYYY-MM-DD HH:MM (once) or HH:MM (daily).",
+                },
+                "every_s": {
+                    "type": "integer",
+                    "description": "Repeat interval in seconds.",
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Code task timeout; 0 means infinite.",
+                },
+                "enabled": {"type": "boolean"},
             },
             ["action"],
         ),
@@ -1261,16 +1341,27 @@ def _native_tool_prompt(config, skills=None, workspace=None, memory=None):
         "block yourself.",
         "When the user asks for the current date or time, call __time instead of "
         "guessing. It returns the board RTC in UTC and in the configured local "
-        "UTC offset.",
+        "UTC offset. Use __time action=set only when the user explicitly asks "
+        "to change the clock, and action=timezone to change the display "
+        "timezone; never write local time into the UTC RTC.",
         "Prefer foreground execution for short program tasks. Use background only "
         "when the task is long-running, must continue while the user does other "
         "work, or the user explicitly asks for it; briefly say why. Background jobs "
         "run on worker threads. Use the __background tool to list, inspect, rename, "
-        "discard or cooperatively stop jobs. In AUTO mode you may start source with "
+        "discard or cooperatively stop jobs; stop_discard stops and drops the result. "
+        "In AUTO mode you may start source with "
         "action=start; otherwise return a normal python block for confirmation. Do "
         "not both start a job and emit the same code block. __workspace action=run "
         "with background=true starts a stored script in the background. Do not "
         "restart a cancelled/stopped job unless the user explicitly asks.",
+        "Use __schedule when the user asks for a reminder, a delayed action or "
+        "a recurring task. one-time tasks accept delay_s or local at "
+        "'YYYY-MM-DD HH:MM'; interval tasks accept every_s; daily tasks accept "
+        "local at 'HH:MM'. A prompt task runs an agent turn at that time and "
+        "still follows AUTO/confirmation rules for generated code. Creating, "
+        "editing, enabling or running a code task requires AUTO mode; otherwise "
+        "use prompt tasks. List tasks before editing, running or deleting them; "
+        "never guess ids.",
         "Generated code may import machine, esp, esp32, neopixel and framebuf "
         "and use the standard MicroPython hardware classes directly. There is "
         "no api object, no peripheral allowlist and no /peripherals "
@@ -1352,14 +1443,22 @@ def builtin_tool_prompt(config, skills=None, workspace=None, memory=None):
         "from __ask. "
         "Never use __ask to ask for execution output; the harness returns that automatically.",
         "\n\nCurrent board time (always available):",
-        '- time: ```tool {"name":"__time","args":{}}```',
+        '- read: ```tool {"name":"__time","args":{}}```',
+        '- set clock: ```tool {"name":"__time","args":{"action":"set","at":"2026-11-27 08:00"}}```',
+        '- set clock from UTC epoch: ```tool {"name":"__time","args":{"action":"set","epoch":1795737600}}```',
+        '- set timezone: ```tool {"name":"__time","args":{"action":"timezone","timezone_offset_minutes":480}}```',
         "Use __time whenever the user asks for the current date or time; never guess. "
-        "It reads the board RTC and converts UTC to the configured local offset.",
+        "It reads the board RTC and converts UTC to the configured local offset. "
+        "Change the clock only when the user explicitly asks; at is local time, "
+        "the RTC itself stays UTC. Setting the timezone changes display and "
+        "daily schedules, not the RTC.",
         "\n\nBackground execution control (always available):",
         '- list: ```tool {"name":"__background","args":{"action":"list"}}```',
         '- status: ```tool {"name":"__background","args":{"action":"status","id":2}}```',
         '- stop: ```tool {"name":"__background","args":{"action":"stop","id":2}}```',
         '- stop all: ```tool {"name":"__background","args":{"action":"stop"}}```',
+        '- stop and discard: ```tool {"name":"__background","args":{"action":"stop_discard","id":2}}```',
+        '- stop and discard all: ```tool {"name":"__background","args":{"action":"stop_discard"}}```',
         '- note: ```tool {"name":"__background","args":{"action":"note","id":2,"text":"dashboard"}}```',
         '- discard: ```tool {"name":"__background","args":{"action":"discard","id":2}}```',
     ]
@@ -1387,10 +1486,26 @@ def builtin_tool_prompt(config, skills=None, workspace=None, memory=None):
         "user may also run foreground code. Use list when the user asks what is "
         "running or refers to a job; ids, notes and elapsed time are in the list. "
         "Stop is cooperative: it takes effect at the next __harness_check(), "
-        "instrumented range loop, while True condition or time.sleep() checkpoint; "
+        "instrumented range loop, while condition or time.sleep() checkpoint; "
         "code blocked in a C/SPI call may not stop until the watchdog. Never claim "
-        "an immediate hard kill. Discard only finished jobs and only after the user "
-        "asks.",
+        "an immediate hard kill. stop_discard also drops the result so it cannot "
+        "be continued; use it only when the user asks to stop and discard. "
+        "Discard only finished jobs and only after the user asks.",
+        "\n\nScheduled tasks (always available):",
+        '- list: ```tool {"name":"__schedule","args":{"action":"list"}}```',
+        '- status: ```tool {"name":"__schedule","args":{"action":"get","id":1}}```',
+        '- later (once): ```tool {"name":"__schedule","args":{"action":"create","type":"prompt","name":"reminder","prompt":"Remind me to check the sensor","when":"once","delay_s":600}}```',
+        '- absolute (once): ```tool {"name":"__schedule","args":{"action":"create","type":"prompt","name":"report","prompt":"Summarize the sensor readings","when":"once","at":"2026-11-27 08:00"}}```',
+        '- interval: ```tool {"name":"__schedule","args":{"action":"create","type":"prompt","name":"weather","prompt":"Report the weather","when":"interval","every_s":3600}}```',
+        '- daily: ```tool {"name":"__schedule","args":{"action":"create","type":"prompt","name":"briefing","prompt":"Give the morning briefing","when":"daily","at":"08:00"}}```',
+        '- update/delete/enable/disable/run: use action with id plus the fields to change.',
+        "Use __schedule whenever the user asks for a reminder, a delayed action or "
+        "a recurring task. at/08:00 are local to the configured timezone, not UTC. "
+        "A prompt task runs a normal agent turn when due; generated code still "
+        "follows AUTO/confirmation rules. A code task runs stored source in the "
+        "background and can only be created, edited, enabled or run when AUTO "
+        "mode is enabled. List tasks before editing, running or deleting; never "
+        "guess ids. The RTC must be valid (make sure NTP has synchronized).",
     ])
     if memory is not None:
         lines.extend([
@@ -1493,7 +1608,7 @@ def builtin_tool_prompt(config, skills=None, workspace=None, memory=None):
             "Stored scripts are data only. With /auto run on, __workspace run executes a .py file directly; "
             "otherwise Harness asks the user to confirm before executing.",
         ])
-    available = ["__ask", "__time", "__background"]
+    available = ["__ask", "__time", "__background", "__schedule"]
     if config.get("http_tool_enabled", True):
         available.append("__http")
     if skills is not None:
@@ -2550,14 +2665,16 @@ class Agent:
             result = self._run_http_tool(args)
         elif name == "__time":
             result = self._run_time_tool(args)
+        elif name == "__schedule":
+            result = self._run_schedule_tool(args)
         elif name.startswith("mcp__") and self.mcp is not None:
             result = self._run_mcp_tool(name, args)
         else:
             result = ToolResult(
                 False, "",
                 "Unknown built-in tool: %s; available: __ask, __background, "
-                "__http, __skill, __workspace, __memory, __search, or an MCP "
-                "tool listed in the system prompt" % name,
+                "__http, __skill, __workspace, __memory, __search, __schedule, "
+                "or an MCP tool listed in the system prompt" % name,
                 0,
             )
         if self.on_tool_result is not None:
@@ -2576,6 +2693,10 @@ class Agent:
             return ToolResult(
                 False, "", "Background control is unavailable", 0)
         action = str(args.get("action", "list")).lower()
+        stop_discard = action in (
+            "stop_discard", "stop-discard", "stopdiscard")
+        if stop_discard:
+            action = "stop"
         job_id = args.get("id", args.get("job_id"))
         if job_id is not None and not isinstance(job_id, int):
             try:
@@ -2593,12 +2714,16 @@ class Agent:
             except TypeError:
                 return runner.background_view()
 
-        def stop_background(target=None):
+        def stop_background(target=None, discard=False):
             try:
                 return runner.stop_background(
-                    "requested by model", job_id=target)
+                    "requested by model", job_id=target, discard=discard)
             except TypeError:
-                return runner.stop_background("requested by model")
+                try:
+                    return runner.stop_background(
+                        "requested by model", job_id=target)
+                except TypeError:
+                    return runner.stop_background("requested by model")
 
         if action in ("start", "run", "auto"):
             if not hasattr(runner, "start_background_source"):
@@ -2751,7 +2876,7 @@ class Agent:
                         "Background job #%s is already %s." % (
                             job_id, view.get("phase")),
                         self._elapsed(started))
-            count = stop_background(job_id)
+            count = stop_background(job_id, discard=stop_discard)
             if not count:
                 return ToolResult(
                     False, "", "Could not request a background stop",
@@ -2759,14 +2884,19 @@ class Agent:
             target = (
                 "job #%s" % job_id if job_id is not None
                 else "%s active job(s)" % count)
-            return ToolResult(
-                True,
-                "Stop requested for %s. It is applied at the next cooperative "
-                "checkpoint (__harness_check, instrumented range loop, "
-                "while True condition or time.sleep). Code blocked in a "
+            message = (
+                "Stop%s requested for %s. It is applied at the next "
+                "cooperative checkpoint (__harness_check, instrumented range "
+                "loop, while condition or time.sleep). Code blocked in a "
                 "C/SPI call may not stop until the watchdog. This is not a "
-                "hard kill." % target,
-                "", self._elapsed(started))
+                "hard kill." % (
+                    " and discard" if stop_discard else "", target))
+            if stop_discard:
+                message += (
+                    " The result will be dropped and will not be offered for "
+                    "continuation.")
+            return ToolResult(
+                True, message, "", self._elapsed(started))
         if action == "note":
             text = str(args.get("text", "") or "").strip()
             if job_id is None or not text:
@@ -2797,8 +2927,180 @@ class Agent:
                 self._elapsed(started))
         return ToolResult(
             False, "",
-            "Usage: action=list|status|stop|note|discard with optional id; "
-            "stop supports no id to stop all active jobs.",
+            "Usage: action=list|status|stop|stop_discard|note|discard with "
+            "optional id; stop supports no id to stop all active jobs.",
+            self._elapsed(started))
+
+    def _run_schedule_tool(self, args):
+        started = self._ticks()
+        runner = (
+            getattr(self.executor, "main_runner", None)
+            if self.executor is not None else None
+        )
+        if runner is None or not hasattr(runner, "schedule_views"):
+            return ToolResult(
+                False, "", "Scheduled tasks are unavailable",
+                self._elapsed(started))
+        args = args or {}
+        action = str(args.get("action", "list") or "list").lower()
+        task_id = args.get("id")
+        if task_id is not None and not isinstance(task_id, int):
+            try:
+                task_id = int(str(task_id))
+            except (TypeError, ValueError):
+                return ToolResult(
+                    False, "", "id must be an integer", self._elapsed(started))
+
+        def task_text(target):
+            text = runner.schedule_text(target, full=False)
+            if text is None:
+                return "No scheduled task #%s." % target
+            return text
+
+        if action in ("list", "ls"):
+            lines = runner.schedule_summary_lines()
+            return ToolResult(
+                True, "\n".join(lines), "", self._elapsed(started))
+        if action in ("get", "status", "show"):
+            if task_id is None:
+                return ToolResult(
+                    False, "", "action=%s requires id" % action,
+                    self._elapsed(started))
+            text = runner.schedule_text(task_id, full=True)
+            if text is None:
+                return ToolResult(
+                    False, "", "No scheduled task #%s" % task_id,
+                    self._elapsed(started))
+            return ToolResult(True, text, "", self._elapsed(started))
+        if action == "create" or action == "update":
+            fields = {}
+            for key in ("name", "type", "prompt", "source", "when",
+                        "delay_s", "at", "every_s", "timeout", "enabled"):
+                if key in args:
+                    fields[key] = args[key]
+            existing = None
+            if action == "update":
+                if task_id is None:
+                    return ToolResult(
+                        False, "", "action=update requires id",
+                        self._elapsed(started))
+                existing = runner.schedule_view(task_id)
+                if existing is None:
+                    return ToolResult(
+                        False, "", "No scheduled task #%s" % task_id,
+                        self._elapsed(started))
+            if not self.config.get("auto_run", False):
+                target_type = str(
+                    fields.get(
+                        "type",
+                        existing.get("type", "prompt")
+                        if existing is not None else "prompt",
+                    ) or "prompt").lower()
+                enable_change = (
+                    target_type == "code"
+                    and "enabled" in fields
+                    and fields.get("enabled") is not False
+                )
+                wants_code = (
+                    target_type == "code"
+                    and (action == "create"
+                         or "source" in fields
+                         or enable_change
+                         or any(key in fields for key in (
+                             "when", "delay_s", "at", "every_s", "timeout")))
+                )
+                if wants_code:
+                    return ToolResult(
+                        False, "",
+                        "Creating or editing a scheduled code task requires "
+                        "AUTO mode (auto_run). Use a prompt task instead, or "
+                        "ask the user to enable AUTO.",
+                        self._elapsed(started))
+            try:
+                if action == "create":
+                    task = runner.create_schedule(fields)
+                    prefix = "Created"
+                else:
+                    task = runner.update_schedule(task_id, fields)
+                    prefix = "Updated"
+            except Exception as exc:
+                return ToolResult(
+                    False, "", str(exc), self._elapsed(started))
+            return ToolResult(
+                True,
+                "%s scheduled task #%s.\n%s" % (
+                    prefix, task.get("id", "?"),
+                    task_text(task.get("id"))),
+                "", self._elapsed(started))
+        if action == "delete":
+            if task_id is None:
+                return ToolResult(
+                    False, "", "action=delete requires id",
+                    self._elapsed(started))
+            try:
+                task = runner.delete_schedule(task_id)
+            except Exception as exc:
+                return ToolResult(
+                    False, "", str(exc), self._elapsed(started))
+            return ToolResult(
+                True, "Deleted scheduled task #%s (%s)." % (
+                    task.get("id", "?"), task.get("name", "")),
+                "", self._elapsed(started))
+        if action in ("enable", "disable"):
+            if task_id is None:
+                return ToolResult(
+                    False, "", "action=%s requires id" % action,
+                    self._elapsed(started))
+            if action == "enable" and not self.config.get("auto_run", False):
+                existing = runner.schedule_view(task_id)
+                if (existing is not None
+                        and existing.get("type") == "code"):
+                    return ToolResult(
+                        False, "",
+                        "Enabling a scheduled code task requires AUTO mode "
+                        "(auto_run). Disable/delete is always allowed.",
+                        self._elapsed(started))
+            try:
+                task = runner.set_schedule_enabled(
+                    task_id, action == "enable")
+            except Exception as exc:
+                return ToolResult(
+                    False, "", str(exc), self._elapsed(started))
+            return ToolResult(
+                True,
+                "Scheduled task #%s %s.\n%s" % (
+                    task.get("id", "?"),
+                    "enabled" if action == "enable" else "disabled",
+                    task_text(task.get("id"))),
+                "", self._elapsed(started))
+        if action in ("run", "start"):
+            if task_id is None:
+                return ToolResult(
+                    False, "", "action=run requires id",
+                    self._elapsed(started))
+            if not self.config.get("auto_run", False):
+                existing = runner.schedule_view(task_id)
+                if (existing is not None
+                        and existing.get("type") == "code"):
+                    return ToolResult(
+                        False, "",
+                        "Running a scheduled code task now requires AUTO mode "
+                        "(auto_run). Use the web Tasks page or enable AUTO.",
+                        self._elapsed(started))
+            try:
+                runner.request_schedule_run(task_id)
+            except Exception as exc:
+                return ToolResult(
+                    False, "", str(exc), self._elapsed(started))
+            return ToolResult(
+                True,
+                "Scheduled task #%s queued; it runs when the device is idle "
+                "and the RTC is valid. Do not create a duplicate task."
+                % task_id,
+                "", self._elapsed(started))
+        return ToolResult(
+            False, "",
+            "Usage: action=list|get|create|update|delete|enable|disable|run",
             self._elapsed(started))
 
     def _ask_user(self, args):
@@ -2874,10 +3176,89 @@ class Agent:
 
     def _run_time_tool(self, args):
         started = self._ticks()
+        args = args or {}
+        action = str(args.get("action", "read") or "read").lower()
+        runner = (
+            getattr(self.executor, "main_runner", None)
+            if self.executor is not None else None
+        )
         try:
-            value = clock.snapshot(self.config)
+            if action in ("read", "show", "get", ""):
+                value = clock.snapshot(self.config)
+                return ToolResult(
+                    True, clock.format_snapshot(value), "",
+                    self._elapsed(started))
+            if action == "timezone":
+                raw = args.get(
+                    "timezone_offset_minutes", args.get("offset_minutes"))
+                try:
+                    offset = int(raw)
+                except (TypeError, ValueError):
+                    return ToolResult(
+                        False, "",
+                        "timezone_offset_minutes must be an integer",
+                        self._elapsed(started))
+                if offset < clock.MIN_OFFSET_MINUTES or offset > clock.MAX_OFFSET_MINUTES:
+                    return ToolResult(
+                        False, "",
+                        "timezone_offset_minutes must be between %s and %s"
+                        % (clock.MIN_OFFSET_MINUTES, clock.MAX_OFFSET_MINUTES),
+                        self._elapsed(started))
+                setter = getattr(runner, "set_timezone_offset", None)
+                if setter is not None:
+                    setter(offset)
+                else:
+                    config_setter = getattr(self.config, "set", None)
+                    if config_setter is None:
+                        return ToolResult(
+                            False, "", "Configuration is read-only",
+                            self._elapsed(started))
+                    config_setter("timezone_offset_minutes", offset)
+                value = clock.snapshot(self.config)
+                return ToolResult(
+                    True,
+                    "Timezone updated to %s.\n%s" % (
+                        value["timezone"], clock.format_snapshot(value)),
+                    "", self._elapsed(started))
+            if action == "set":
+                epoch = args.get("epoch")
+                at_text = str(args.get("at", "") or "").strip()
+                if epoch is None and at_text:
+                    epoch = clock.parse_local_datetime(at_text, self.config)
+                    if epoch is None:
+                        return ToolResult(
+                            False, "",
+                            "at must be local YYYY-MM-DD HH:MM[:SS]",
+                            self._elapsed(started))
+                if epoch is None:
+                    return ToolResult(
+                        False, "",
+                        "action=set requires at or epoch",
+                        self._elapsed(started))
+                try:
+                    epoch = int(epoch)
+                except (TypeError, ValueError):
+                    return ToolResult(
+                        False, "", "epoch must be an integer",
+                        self._elapsed(started))
+                if epoch < 0:
+                    return ToolResult(
+                        False, "", "epoch must be >= 0",
+                        self._elapsed(started))
+                setter = getattr(runner, "set_clock_time", None)
+                if setter is not None:
+                    setter(epoch)
+                else:
+                    clock.write_rtc(epoch)
+                value = clock.snapshot(self.config)
+                return ToolResult(
+                    True,
+                    "Clock updated.\n%s" % clock.format_snapshot(value),
+                    "", self._elapsed(started))
             return ToolResult(
-                True, clock.format_snapshot(value), "",
+                False, "",
+                "Usage: action=read, action=set with at/epoch, or "
+                "action=timezone with timezone_offset_minutes",
                 self._elapsed(started))
         except Exception as exc:
             return ToolResult(False, "", str(exc), self._elapsed(started))

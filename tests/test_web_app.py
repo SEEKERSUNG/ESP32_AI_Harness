@@ -10,6 +10,7 @@ from harness.config import Config
 from harness.console import LiveTurn, UIRouter, command_is_exclusive
 from harness.llm import LLMStreamCancelled
 from harness.mcp import MCPManager, MCPStore
+from harness.schedule import ScheduleStore, Scheduler
 from harness.web import WebError, WebRequest
 from harness.webapp import (
     CommandCaptureSink,
@@ -278,6 +279,10 @@ class FakeApp:
         self.http = FakeHttp()
         self.mcp_store = MCPStore(root, self.config)
         self.mcp = MCPManager(self.config, self.http, self.mcp_store)
+        self.schedule_store = ScheduleStore(root, self.config)
+        self.schedules = Scheduler(self.config, self.schedule_store)
+        self.schedule_seq = 0
+        self.schedule_now = 1795500000
         self.llm = FakeLLM()
         self.agent = FakeAgent(self)
         self.executor = object()
@@ -293,6 +298,7 @@ class FakeApp:
         self.prepare_network_calls = 0
         self.prepare_error = None
         self.main_calls = 0
+        self.stop_calls = []
         self.start_ap_calls = 0
         self.start_ap_error = None
         self.commands = []
@@ -315,7 +321,7 @@ class FakeApp:
         if self.background_active() and source not in (
                 "web-chat", "web-run", "web-continue", "web-background-stop",
                 "web-background-discard", "web-discard", "web-save-skill",
-                "serial"):
+                "schedule", "serial"):
             return False
         if self.turn_lock is not None and not self.turn_lock.acquire(False):
             return False
@@ -424,7 +430,8 @@ class FakeApp:
                 job.get("note") or job.get("task") or "<none>"))
         return lines
 
-    def stop_background(self, reason="", job_id=None):
+    def stop_background(self, reason="", job_id=None, discard=False):
+        self.stop_calls.append((reason, job_id, discard))
         count = 0
         for job in self.background_jobs:
             if job.get("phase") not in ("queued", "running"):
@@ -433,6 +440,8 @@ class FakeApp:
                 continue
             job["stop_requested"] = True
             job["stop_reason"] = reason
+            if discard:
+                job["discard_on_finish"] = True
             count += 1
         return count
 
@@ -539,6 +548,42 @@ class FakeApp:
 
     def refresh_background_limits(self):
         pass
+
+    def schedule_views(self):
+        return self.schedules.views()
+
+    def schedule_full_views(self):
+        return [
+            self.schedules.view(task.get("id"), full=True)
+            for task in self.schedules.snapshot()
+        ]
+
+    def schedule_view(self, task_id, full=False):
+        return self.schedules.view(task_id, full=full)
+
+    def schedule_text(self, task_id, full=False):
+        return self.schedules.format_task(task_id, full=full)
+
+    def schedule_summary_lines(self):
+        return self.schedules.summary_lines()
+
+    def create_schedule(self, fields):
+        return self.schedules.create(fields, self.schedule_now)
+
+    def update_schedule(self, task_id, fields):
+        return self.schedules.update(task_id, fields, self.schedule_now)
+
+    def delete_schedule(self, task_id):
+        return self.schedules.delete(task_id)
+
+    def set_schedule_enabled(self, task_id, enabled):
+        return self.schedules.set_enabled(task_id, enabled)
+
+    def request_schedule_run(self, task_id):
+        return self.schedules.request_run(task_id, self.schedule_now)
+
+    def rebase_schedules(self):
+        return self.schedules.rebase_timezone(self.schedule_now)
 
     def is_turn_busy(self):
         if self.busy_source:
@@ -1112,6 +1157,15 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(1, writer.json["count"])
         self.assertFalse(self.app.background_jobs[0]["stop_requested"])
         self.assertTrue(self.app.background_jobs[1]["stop_requested"])
+
+        writer = self.call(request("POST", "/api/background/stop",
+                                   {"id": 61, "discard": True}, token=token))
+        self.assertTrue(writer.json["stop_requested"])
+        self.assertTrue(writer.json["discard"])
+        self.assertIn("discard", writer.json["message"])
+        self.assertTrue(self.app.background_jobs[1]["discard_on_finish"])
+        self.assertEqual(
+            ("requested from web", 61, True), self.app.stop_calls[-1])
 
         writer = self.call(request("POST", "/api/background/stop", {},
                                    token=token))
@@ -1963,6 +2017,88 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(404, raised.exception.status)
 
 
+    def test_schedule_api_crud_run_and_code_confirmation(self):
+        token = self.token()
+        status = self.call(request("GET", "/api/status", token=token))
+        self.assertEqual(200, status.status)
+        self.assertEqual([], status.json["schedules"])
+
+        created = self.call(request("POST", "/api/schedules", {
+            "action": "create",
+            "type": "prompt",
+            "name": "sensor",
+            "prompt": "Check the sensor",
+            "when": "once",
+            "delay_s": 600,
+        }, token=token))
+        self.assertEqual(200, created.status)
+        self.assertEqual(1, created.json["task"]["id"])
+        self.assertEqual("sensor", created.json["task"]["name"])
+        self.assertEqual("prompt", created.json["task"]["type"])
+        self.assertEqual(1, len(created.json["tasks"]))
+
+        full = self.call(request(
+            "GET", "/api/schedules", token=token, query={"id": "1"}))
+        self.assertEqual(200, full.status)
+        self.assertEqual("Check the sensor", full.json["tasks"][0]["prompt"])
+
+        updated = self.call(request("POST", "/api/schedules", {
+            "action": "update", "id": 1, "name": "renamed",
+        }, token=token))
+        self.assertEqual(200, updated.status)
+        self.assertEqual("renamed", updated.json["task"]["name"])
+
+        queued = self.call(request("POST", "/api/schedules", {
+            "action": "run", "id": 1,
+        }, token=token))
+        self.assertEqual(200, queued.status)
+        self.assertIn("queued", queued.json["message"])
+        self.assertEqual(
+            self.app.schedule_now,
+            self.app.schedules.get(1)["next_run"])
+
+        disabled = self.call(request("POST", "/api/schedules", {
+            "action": "disable", "id": 1,
+        }, token=token))
+        self.assertEqual(200, disabled.status)
+        self.assertFalse(disabled.json["task"]["enabled"])
+
+        deleted = self.call(request("POST", "/api/schedules", {
+            "action": "delete", "id": 1,
+        }, token=token))
+        self.assertEqual(200, deleted.status)
+        self.assertEqual([], deleted.json["tasks"])
+
+        with self.assertRaises(WebError) as raised:
+            self.call(request("POST", "/api/schedules", {
+                "action": "create",
+                "type": "code",
+                "name": "blink",
+                "source": "print(1)",
+                "when": "once",
+                "delay_s": 30,
+            }, token=token))
+        self.assertEqual(400, raised.exception.status)
+        self.assertEqual("confirm", raised.exception.code)
+
+        confirmed = self.call(request("POST", "/api/schedules", {
+            "action": "create",
+            "type": "code",
+            "name": "blink",
+            "source": "print(1)",
+            "when": "once",
+            "delay_s": 30,
+            "confirm": True,
+        }, token=token))
+        self.assertEqual(200, confirmed.status)
+        self.assertEqual("code", confirmed.json["task"]["type"])
+
+        status = self.call(request("GET", "/api/status", token=token))
+        self.assertEqual(1, len(status.json["schedules"]))
+        self.assertEqual(
+            "blink", status.json["schedules"][0]["name"])
+
+
 class WebTurnSinkTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -2082,6 +2218,11 @@ class CommandTests(unittest.TestCase):
         self.assertFalse(command_is_exclusive("/bg status 2"))
         self.assertTrue(command_is_exclusive("/background stop"))
         self.assertTrue(command_is_exclusive("/background note 2 dashboard"))
+        self.assertFalse(command_is_exclusive("/schedule"))
+        self.assertFalse(command_is_exclusive("/schedule list"))
+        self.assertFalse(command_is_exclusive("/schedule status 1"))
+        self.assertTrue(command_is_exclusive("/schedule run 1"))
+        self.assertTrue(command_is_exclusive("/schedule delete 1"))
         self.assertTrue(command_is_exclusive("/clear"))
         self.assertTrue(command_is_exclusive("/discard"))
         self.assertTrue(command_is_exclusive("/run"))

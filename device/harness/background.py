@@ -41,6 +41,7 @@ EMPTY_VIEW = {
     "elapsed_ms": 0,
     "stop_requested": False,
     "stop_reason": "",
+    "discard_on_finish": False,
     "error": "",
     "result": None,
 }
@@ -169,6 +170,7 @@ class BackgroundPool:
                 "finished_ms": 0,
                 "stop_requested": False,
                 "stop_reason": "",
+                "discard_on_finish": False,
                 "result": None,
                 "error": "",
             }
@@ -240,18 +242,29 @@ class BackgroundPool:
         self._finish(job, result)
 
     def _finish(self, job, result):
+        discarded = False
         self._acquire()
         try:
             if job not in self.jobs:
                 return
-            job["result"] = result
-            job["phase"] = "ready"
-            job["finished_ms"] = self.clock()
-            job["stop_requested"] = False
-            job["source"] = None
+            if job.get("discard_on_finish"):
+                # A stop-and-discard request must never expose a result or
+                # revive the job when a worker stops at its checkpoint.
+                self.jobs.remove(job)
+                discarded = True
+            else:
+                job["result"] = result
+                job["phase"] = "ready"
+                job["finished_ms"] = self.clock()
+                job["stop_requested"] = False
+                job["source"] = None
         finally:
             self._release()
         self.save()
+        if discarded:
+            self._notify_discarded(job, "stopped")
+            self._launch_next()
+            return
         self._notify_finished(job, result)
         self._launch_next()
 
@@ -273,6 +286,17 @@ class BackgroundPool:
                 getattr(result, "elapsed_ms", 0)))
         try:
             self.notify(text)
+        except Exception:
+            pass
+
+    def _notify_discarded(self, job, reason="discarded"):
+        if self.notify is None:
+            return
+        try:
+            self.notify(
+                "Background job #%s %s; its result was discarded and will "
+                "not be offered for continuation." % (
+                    job.get("id", "?"), reason))
         except Exception:
             pass
 
@@ -435,46 +459,61 @@ class BackgroundPool:
             self._release()
 
     # -- stop / take / discard ------------------------------------------
-    def stop(self, job_id=None, reason=""):
+    def stop(self, job_id=None, reason="", discard=False):
         # Without an id, stop every active job (the web/API and AI tool have no
         # separate single-job default). With an id, touch only that job.
+        # discard=True removes a queued job immediately and marks a running
+        # job so its final result is dropped instead of becoming ready.
         target = self._job_id(job_id)
         if job_id is not None and target is None:
             return 0
         stopped = []
         cancel_queued = []
+        discard_queued = []
         now = self.clock()
         self._acquire()
         try:
-            for job in self.jobs:
+            # Stop-and-discard removes queued jobs inside the loop, so iterate
+            # over a snapshot rather than the live list.
+            for job in list(self.jobs):
                 if job.get("phase") not in ACTIVE_PHASES:
                     continue
                 if target is not None and job.get("id") != target:
                     continue
                 if job.get("phase") == "queued":
-                    # Mark it finished under the same lock so _launch_next
-                    # cannot start it between selection and cancellation.
-                    result = ExecutionResult(
-                        False, "",
-                        "ExecutionCancelled: stop requested before start",
-                        0, False, False, True)
-                    job["result"] = result
-                    job["phase"] = "ready"
-                    job["finished_ms"] = now
-                    job["stop_requested"] = False
-                    job["source"] = None
-                    cancel_queued.append(job)
+                    if discard:
+                        # Never let _launch_next start a job the user asked to
+                        # stop and discard.
+                        self.jobs.remove(job)
+                        discard_queued.append(job)
+                    else:
+                        # Mark it finished under the same lock so _launch_next
+                        # cannot start it between selection and cancellation.
+                        result = ExecutionResult(
+                            False, "",
+                            "ExecutionCancelled: stop requested before start",
+                            0, False, False, True)
+                        job["result"] = result
+                        job["phase"] = "ready"
+                        job["finished_ms"] = now
+                        job["stop_requested"] = False
+                        job["source"] = None
+                        cancel_queued.append(job)
                 else:
                     job["stop_requested"] = True
                     job["stop_reason"] = _clip(reason, 120)
+                    if discard:
+                        job["discard_on_finish"] = True
                 stopped.append(job)
         finally:
             self._release()
         for job in cancel_queued:
             self._notify_finished(job, job["result"])
+        for job in discard_queued:
+            self._notify_discarded(job, "stopped before start")
         if stopped:
             self.save()
-        if cancel_queued:
+        if cancel_queued or discard_queued:
             self._launch_next()
         return len(stopped)
 
@@ -575,6 +614,10 @@ class BackgroundPool:
         restored = []
         highest = 0
         for job in jobs:
+            if job.get("discard_on_finish"):
+                # The user stopped-and-discarded this job; a reboot must not
+                # resurface its result or an error record.
+                continue
             token = job.get("token") or job.get("id")
             if committed is not None and committed(token):
                 continue
@@ -690,6 +733,7 @@ class BackgroundPool:
             "elapsed_ms": max(0, elapsed_ms),
             "stop_requested": bool(job.get("stop_requested")),
             "stop_reason": _clip(job.get("stop_reason", ""), 120),
+            "discard_on_finish": bool(job.get("discard_on_finish")),
             "error": _clip(job.get("error", ""), 1024),
             "result": None,
         }
@@ -765,6 +809,8 @@ class BackgroundPool:
                 self.timeout_label(job.get("timeout")), _clip(note, 120))
             if phase in ACTIVE_PHASES and job.get("stop_requested"):
                 line += " stop=requested"
+            if phase in ACTIVE_PHASES and job.get("discard_on_finish"):
+                line += " discard=requested"
             if result is not None:
                 if getattr(result, "cancelled", False):
                     state = "cancelled"

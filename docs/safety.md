@@ -14,7 +14,7 @@
 
 ## 看门狗与执行恢复
 
-默认 `watchdog_ms = 30000`。串口等待和网络响应接收期间 Harness 持续喂狗，因此模型生成时间可以超过 30 秒。生成代码执行期间，只有协作式截止钩子（`__harness_check()`、插桩后的 `range()`/`while True:`、代理后的 `time.sleep()`）会调用 `feed_execution()` 喂狗；不经过这些钩子的代码仍会停止喂狗。
+默认 `watchdog_ms = 30000`。串口等待和网络响应接收期间 Harness 持续喂狗，因此模型生成时间可以超过 30 秒。生成代码执行期间，只有协作式截止钩子（`__harness_check()`、插桩后的 `range()`/所有 `while` 条件、代理后的 `time.sleep()`）会调用 `feed_execution()` 喂狗；不经过这些钩子的代码（如超长非 `range` 的 `for` 循环、单次迭代内长时间阻塞的 C/SPI 调用）仍会停止喂狗。
 
 执行前保存：
 
@@ -23,7 +23,7 @@
 
 正常结束或捕获异常会删除二者。异常复位后，源码恢复为 pending 并显示警告，**不会自动重跑**。用户可以 `/code` 审查、`/discard` 丢弃，或再次 `/run`。
 
-执行器默认在 `code_timeout_s=20` 秒时停止可协作代码，模型可在开围栏同一行声明 `timeout=`（上限 `code_timeout_max_s=300`）；闭合围栏后的独立 `timeout=` 行和代码块首个未再使用的独立 `timeout=N` 行会作为兼容形式识别，但其他说明文字不会。超时返回 `status=timeout`，设备不重启；自动反馈可以继续。超时只停止当前 `exec`，不终止之前代码创建的 Python 线程。看门狗仍是最后防线：复杂 `while` 条件、C 级阻塞调用、关闭钩子的代码和硬 fault 仍可能复位。看门狗是可用性机制，不是权限边界。
+执行器默认在 `code_timeout_s=20` 秒时停止可协作代码，模型可在开围栏同一行声明 `timeout=`（上限 `code_timeout_max_s=300`）；闭合围栏后的独立 `timeout=` 行和代码块首个未再使用的独立 `timeout=N` 行会作为兼容形式识别，但其他说明文字不会。超时返回 `status=timeout`，设备不重启；自动反馈可以继续。超时只停止当前 `exec`，不终止之前代码创建的 Python 线程。看门狗仍是最后防线：C/SPI 级阻塞调用、超长非 `range` 的 `for` 循环、单次迭代内长时间阻塞、关闭钩子的代码和硬 fault 仍可能复位。看门狗是可用性机制，不是权限边界。
 
 `/repl` 创建 `/maintenance.flag` 并复位；维护模式下 Agent 和看门狗都不启动。部署器会自动清除该标志。
 
@@ -52,11 +52,13 @@
 - 所有 POST 要求 `X-Harness: 1`、精确 `Origin` 和 JSON Content-Type；Host 必须匹配当前 STA/AP IP、`127.0.0.1` 或 `localhost`；不发送 CORS 头。Cookie 为 `HttpOnly; SameSite=Strict`，HTTP 下没有 `Secure`。
 - 管理员可以修改 `base_url`，从而把已保存的 API Key 发往新地址；管理员权限约等于凭据控制权。不要把管理员密码交给不可信的人。
 - 网页触发的生成代码与串口 `/run` 拥有相同的完整 MicroPython 权限；网页自动模式与 `/auto` 共用全局配置，会自动执行代码并产生多次计费请求。普通超时由协作式截止时间停止；不经过钩子的死循环仍由看门狗复位。
-- 后台执行最多同时运行 `background_max_jobs` 个任务（默认 4，可设 1–4），每个任务在自己的 worker 线程；它不改变权限、超时或看门狗规则。任务无法被硬杀：AI 的 `__background stop`、网页停止按钮、`/background stop` 和 `POST /api/background/stop` 只设置协作取消标志，在 `__harness_check()`、`range`、`while True` 或 `time.sleep()` 检查点抛出 `ExecutionCancelled`；阻塞在 C/SPI 调用中的任务可能只能重启设备。`timeout=0`/`infinite` 允许后台无截止时间运行，但必须依赖这些检查点和显式停止，30 秒看门狗仍是最后防线。后台任务可与新对话、前台代码以及其他后台任务并行，因此代码之间可能竞争文件、网络和全局状态；不要同时写同一文件，也不要让多个任务同时驱动同一条 SPI/I2C 总线或同一设备。后台输出通过线程级 `print` 捕获，直接写 `sys.stdout` 可能丢失。后台记录写入 `/state/background.json`，完成但尚未继续的输出会在设备重启后保留，直到继续、丢弃、`/clear` 或恢复出厂设置；未完成记录在重启后变为 error 且不会自动重跑。并发任务不写单一的 `recovery.py` 标记，避免互相覆盖；复位后源码仍在对话历史中，可由用户重新审查。结果观察会标注原任务和其他仍在运行的任务；若其间留下待执行代码、Skill 或问题，自动继续会等待其处理完毕。AUTO 模式且 `auto_feedback=true` 时由设备主线程自动继续完成结果（不依赖网页保持打开），仍会产生计费模型请求；手动模式保留网页“继续/丢弃”选择。
+- 后台执行最多同时运行 `background_max_jobs` 个任务（默认 4，可设 1–4），每个任务在自己的 worker 线程；它不改变权限、超时或看门狗规则。任务无法被硬杀：AI 的 `__background stop`、网页停止按钮、`/background stop` 和 `POST /api/background/stop` 只设置协作取消标志，在 `__harness_check()`、插桩后的 `range`、所有 `while` 条件或 `time.sleep()` 检查点抛出 `ExecutionCancelled`；阻塞在 C/SPI 调用中的任务可能只能重启设备。停止并丢弃（`stop_discard`、`/background stopdiscard`、`POST /api/background/stop {"discard":true}`）同样依赖协作检查点，但结果不会进入 ready、自动继续或重启恢复记录；排队任务会立即移除。`timeout=0`/`infinite` 允许后台无截止时间运行，但必须依赖这些检查点和显式停止，30 秒看门狗仍是最后防线。后台任务可与新对话、前台代码以及其他后台任务并行，因此代码之间可能竞争文件、网络和全局状态；不要同时写同一文件，也不要让多个任务同时驱动同一条 SPI/I2C 总线或同一设备。后台输出通过线程级 `print` 捕获，直接写 `sys.stdout` 可能丢失。后台记录写入 `/state/background.json`，完成但尚未继续的输出会在设备重启后保留，直到继续、丢弃、`/clear` 或恢复出厂设置；未完成记录在重启后变为 error 且不会自动重跑。并发任务不写单一的 `recovery.py` 标记，避免互相覆盖；复位后源码仍在对话历史中，可由用户重新审查。结果观察会标注原任务和其他仍在运行的任务；若其间留下待执行代码、Skill 或问题，自动继续会等待其处理完毕。AUTO 模式且 `auto_feedback=true` 时由设备主线程自动继续完成结果（不依赖网页保持打开），仍会产生计费模型请求；手动模式保留网页“继续/丢弃”选择。
+- 定时任务保存在 `/state/schedules.json`，按 RTC 本地时间执行。提示词任务在设备空闲时自动发起模型回合，即使没有浏览器打开也会运行并产生计费请求；生成代码仍遵守 AUTO/确认，AUTO 关闭时只会留下待执行代码。代码任务会按保存的源码在后台自动运行，AI 通过 `__schedule` 创建、修改、启用或立即运行代码任务必须先开启 AUTO（停用/删除不受限）；网页表单由管理员确认后创建，不要求 AUTO。RTC 未同步（年份早于 2025）时全部跳过。失败后 60 秒重试、最多 3 次；重复任务错过多次只补跑一次。`/schedule` 和网页可随时停用/删除；恢复出厂设置删除全部任务。
+- `__time action=set` 会直接写入 RTC，`action=timezone` 会修改显示时区并重排每日任务；只在用户明确要求时使用。手动时间可能在下一次 NTP 同步时被覆盖。
 - `/undo` 和网页回退只删除对话上下文，不回滚已经执行的 GPIO、文件、网络或其他设备副作用；它还会清除待执行代码、Skill 提案、待回答问题和最近执行结果。后台任务运行期间不能回退。
 - 网页 `/api/command` 接受配置、Memory/Skill/Workspace 写入、MCP、后台控制、`/http`、`/run`、`/run bg`、`/workspace run` 和 `/continue` 等命令；风险操作在浏览器确认后以 `confirm:true` 重试，生成/工作区代码仍通过主线程 handoff 执行。需要第二行输入或重启设备的 `/setup`、`/wifi`、`/model`、`/ca`、`/factory-reset`、`/web reset-password` 使用专用网页表单/按钮（`/repl` 仅串口；`/memory replace` 可用 `=>` 单行形式）。回退可通过 `/undo`/`/rewind` 或专用 `POST /api/rewind`。
 - Web CA 上传只接受包含 PEM 标记、路径为绝对 `.pem` 且不含 `..` 的内容，上限 64 KB。全量 Mozilla bundle 建议通过部署或串口安装。
-- Web 线程只处理 HTTP 和模型请求，不直接执行前台生成代码、不调用 `os.dupterm`、不复位设备、不直接喂看门狗；前台生成代码和工作区脚本通过主线程 handoff 执行。后台 worker 线程只运行经过相同确认规则的任务，使用线程级输出隔离，也不调用 `os.dupterm`/`machine.reset`/喂狗。执行器的协作式钩子只在主线程调用 `feed_execution()`；后台 worker 的喂狗调用是空操作。因此网页触发的可协作长前台程序可以安全超过 30 秒；不经过钩子的前台死循环仍会停止喂狗并复位，而后台任务完全阻塞时主线程仍喂狗，该任务通常只能靠重启恢复。共享执行运行时必须在最后一个执行结束/线程结束后恢复 `builtins.print`、`builtins.__harness_check` 和 `time` 模块。
+- Web 线程只处理 HTTP 和模型请求，不直接执行前台生成代码、不调用 `os.dupterm`、不复位设备、不直接喂看门狗；前台生成代码和工作区脚本通过主线程 handoff 执行。后台 worker 线程只运行经过相同确认规则的任务，使用线程级输出隔离，也不调用 `os.dupterm`/`machine.reset`/喂狗。执行器的协作式钩子只在主线程调用 `feed_execution()`；后台 worker 的喂狗调用是空操作。因此网页触发的可协作长前台程序可以安全超过 30 秒；不经过钩子的前台阻塞（如单次 C/SPI 调用或超长非 `range` 的 `for` 循环）仍会停止喂狗并复位，而后台任务完全阻塞时主线程仍喂狗，该任务通常只能靠重启恢复。共享执行运行时必须在最后一个执行结束/线程结束后恢复 `builtins.print`、`builtins.__harness_check` 和 `time` 模块。
 - 单 Web 线程意味着长对话期间其他网页请求排队；这不是并发隔离，不能用来承载多用户或公网访问。请求头和正文读取有 `web_request_timeout_s` 总超时，但长模型回合期间网络维护仍会延后。
 - “停止”按钮只停止接收响应并等待设备回合结束，不能强制终止已经开始的 Python 代码。代码副作用不会因点击停止而撤销。
 - Web 配置布尔字段只接受 JSON `true`/`false`。首次设置和配置更新通过 `save_all()` 在写盘异常时恢复旧文件和 RAM；该回滚不能保证两个独立文件在掉电瞬间的全局原子性。

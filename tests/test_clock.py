@@ -1,3 +1,4 @@
+import sys
 import unittest
 from unittest import mock
 
@@ -9,6 +10,30 @@ from harness.agent import (
 )
 from harness.clock import TimeSync, format_snapshot, snapshot
 from tests.support import DummyBoard, DummyConfig
+
+
+class MutableConfig(DummyConfig):
+    def set(self, name, value, save=True):
+        self.values[name] = value
+
+
+class FakeRTC:
+    def __init__(self, value):
+        self.value = value
+
+    def datetime(self, value=None):
+        if value is not None:
+            self.value = value
+            return None
+        return self.value
+
+
+class FakeMachine:
+    def __init__(self, value):
+        self.rtc = FakeRTC(value)
+
+    def RTC(self):
+        return self.rtc
 
 
 class FakeClock:
@@ -195,6 +220,83 @@ class TimeToolTests(unittest.TestCase):
                       result.output)
         self.assertIn("utc: 2026-11-26T02:30:00Z", result.output)
         self.assertIn("valid: true", result.output)
+
+    def test_time_tool_sets_rtc_from_local_time(self):
+        machine = FakeMachine((2026, 11, 26, 4, 0, 0, 0, 0))
+        agent = Agent(
+            DummyConfig(stream=False, timezone_offset_minutes=480),
+            StubLLM(), DummyBoard())
+        with mock.patch.dict(sys.modules, {"machine": machine}):
+            result = agent._execute_tool({
+                "name": "__time",
+                "args": {"action": "set", "at": "2026-11-27 08:00"},
+            })
+        self.assertTrue(result.ok, result.error)
+        self.assertIn("Clock updated.", result.output)
+        self.assertIn("utc: 2026-11-27T00:00:00Z", result.output)
+        self.assertIn("local: 2026-11-27 08:00:00 UTC+08:00", result.output)
+        self.assertEqual(2026, machine.rtc.value[0])
+        self.assertEqual(11, machine.rtc.value[1])
+        self.assertEqual(27, machine.rtc.value[2])
+        self.assertEqual(0, machine.rtc.value[4])
+
+    def test_time_tool_sets_rtc_from_epoch(self):
+        machine = FakeMachine((2026, 11, 26, 4, 0, 0, 0, 0))
+        agent = Agent(
+            DummyConfig(stream=False, timezone_offset_minutes=480),
+            StubLLM(), DummyBoard())
+        epoch = 1795737600  # 2026-11-27 00:00:00 UTC
+        with mock.patch.dict(sys.modules, {"machine": machine}):
+            result = agent._execute_tool({
+                "name": "__time",
+                "args": {"action": "set", "epoch": epoch},
+            })
+        self.assertTrue(result.ok, result.error)
+        self.assertIn("epoch: %s" % epoch, result.output)
+
+    def test_time_tool_updates_timezone(self):
+        machine = FakeMachine((2026, 11, 26, 3, 2, 30, 0, 0))
+        config = MutableConfig(stream=False, timezone_offset_minutes=480)
+        agent = Agent(config, StubLLM(), DummyBoard())
+        with mock.patch.dict(sys.modules, {"machine": machine}):
+            result = agent._execute_tool({
+                "name": "__time",
+                "args": {
+                    "action": "timezone",
+                    "timezone_offset_minutes": 0,
+                },
+            })
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(0, config.get("timezone_offset_minutes"))
+        self.assertIn("Timezone updated to UTC+00:00", result.output)
+        self.assertIn("local: 2026-11-26 02:30:00 UTC+00:00", result.output)
+
+    def test_time_tool_rejects_invalid_time_and_offset(self):
+        machine = FakeMachine((2026, 11, 26, 2, 30, 0, 0, 0))
+        agent = Agent(
+            MutableConfig(stream=False), StubLLM(), DummyBoard())
+        with mock.patch.dict(sys.modules, {"machine": machine}):
+            result = agent._execute_tool({
+                "name": "__time",
+                "args": {"action": "set", "at": "not-a-date"},
+            })
+            self.assertFalse(result.ok)
+            self.assertIn("YYYY-MM-DD", result.error)
+            result = agent._execute_tool({
+                "name": "__time",
+                "args": {
+                    "action": "timezone",
+                    "timezone_offset_minutes": 9999,
+                },
+            })
+            self.assertFalse(result.ok)
+            self.assertIn("between", result.error)
+            result = agent._execute_tool({
+                "name": "__time",
+                "args": {"action": "set"},
+            })
+            self.assertFalse(result.ok)
+            self.assertIn("requires at or epoch", result.error)
 
 
 if __name__ == "__main__":

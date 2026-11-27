@@ -4,6 +4,11 @@
 
 ### Added
 
+- 后台任务“停止并丢弃”：`__background action=stop_discard`、`/background stopdiscard [ID]`、网页每个任务的“停止并丢弃 #N”和“停止并丢弃全部”，以及 `POST /api/background/stop {"discard":true}`。排队任务立即移除；运行中任务标记 `discard_on_finish`，在协作检查点结束后直接移除，不产生 ready 结果，不会被自动继续/手动继续，也不会在重启后恢复为 error/ready 记录；
+- 定时任务：新增 `schedule.py`、`/state/schedules.json` 持久化和 `__schedule` 内置工具（list/get/create/update/delete/enable/disable/run）。支持一次性（`delay_s` 或本地 `at`）、固定间隔（`every_s`）和每天本地时间（`at=HH:MM`）；提示词任务到点后执行一个正常 Agent 回合，代码任务到点后创建后台任务；AI 创建、修改、启用或立即运行代码任务需要 AUTO，停用/删除不受限。串口主线程在 `Application.idle()` 中逐个执行，RTC 无效时跳过；失败 60 秒后重试、最多 3 次，重复任务错过多次只补跑一次；新增 `/schedule`、`GET/POST /api/schedules` 和网页“任务”页的新建/编辑/启停/立即运行/删除，状态通过 `/api/status.schedules` 和 `schedule_seq` 同步；
+- `__time` 写入与时间区管理：`action=set` 支持本地 `at` 或 UTC `epoch` 写入 `machine.RTC()`（始终保存 UTC），`action=timezone` 修改 `timezone_offset_minutes` 并重排每日定时任务；保留默认 `read` 行为；
+- 网页“任务”页：后台任务气泡从聊天流移到底部“任务 → 后台任务”，位置固定，不再随新回复漂移；同一页下方管理定时任务；
+- `docs/openai.md`：补齐 OpenAI 兼容 Chat Completions 的端点、Header、thinking、流式工具调用、重试和限制说明，与 `docs/anthropic.md` 对称；
 - 自动校时与 `__time` 工具：联网成功后自动通过 NTP 校时，启动时立即尝试，之后按 `ntp_sync_interval_s`（默认 21600 秒/6 小时，0 表示仅首次）刷新，失败 60 秒后重试；新增 `ntp_server`、`ntp_sync_interval_s`、`timezone_offset_minutes`（默认 480，UTC+8）配置及网页“行为”设置。`__time` 直接读取 RTC 的 UTC 时间，返回本地 ISO 时间、UTC、epoch、星期、时区偏移和有效性，模型可用原生或文本工具调用回答当前日期/时间；RTC 本身仍保存 UTC，时区只影响显示，不处理夏令时；
 - 思考文本默认显示：`show_thinking` 默认值改为 `true`，出厂设置或首次启动后 High/Max 思考模式的 reasoning 会直接显示，不再出现“显示 High 但看不到思考”的观感；仍可用 `/thinking show off` 或网页“显示思考文本”关闭；
 - Anthropic 协议的 DeepSeek 思考参数：`AnthropicClient` 检测 DeepSeek 模型或 `deepseek.com` 端点后改发 DeepSeek 的 `thinking: {"type":"enabled"}`（关闭时显式 `disabled`），不再发送会被 DeepSeek 忽略的 Anthropic `adaptive`/`output_config`；修复切到 DeepSeek Anthropic 兼容端点后显示 High 但实际未思考的问题；
@@ -27,6 +32,8 @@
 
 ### Fixed
 
+- 生成代码的 `while <任意条件>:` 此前不会自动插桩，只有 `range()`、字面量 `while True:`/`while 1:` 和 `time.sleep()` 会喂狗；使用 `while time.ticks_diff(...) < ...:` 等轮询循环且不显式调用 `__harness_check()` 时，30 秒看门狗会直接复位设备（`WDT_RESET`）。执行器现在把所有 `while` 条件改写为 `while __harness_check() or (<条件>):`，扫描时跟踪括号、字符串、注释和 `:=`，避免误改切片/字典/lambda 中的冒号；非 `range` 的 `for` 循环和单次迭代内长时间阻塞仍需显式检查；
+- 后台任务或定时任务完成后的 Agent 续答会与上一条回复合并到同一个 turn 卡片，看起来像同一条消息。现在后台结果观察和定时任务都从新的 turn 开始；live 自动继续通过 `separate_turn` 标志创建新 turn，并在新 turn 内显示“后台任务 #N 已返回/定时任务 #N 开始执行”的提示。手动“继续”也会先开启新的 turn；
 - `__http` 出站信任边界加固：DNS 校验与实际连接原本分别解析，存在 rebinding 窗口；现在把校验过的 IPv4 地址固定用于该次 socket 连接，同时保留原主机名的 TLS SNI 和 Host。跨源重定向会丢弃调用方 Header，HTTPS→HTTP 降级被拒绝；URL 和 Header 中的换行/控制字符、非法 Header 名会被拒绝，避免请求头注入；
 - `tools/deploy.py --changed` 现在跟踪 `harness/__init__.py`，只改 `__version__` 的增量部署不会再被静默跳过；部署器改用当前 Python 的 `sys.executable -m mpremote`，避免虚拟环境中的 `mpy-cross` 与系统 Python 的 `mpremote` 混用；
 - 快速开始此前只创建虚拟环境并安装依赖，后续却调用系统 `python`/`mpremote`；中英文 README 和部署文档现在明确激活虚拟环境，并把“先刷入匹配的 MicroPython v1.29.0 SPIRAM_OCT 固件”放在部署之前；
@@ -70,6 +77,8 @@
 
 ### Changed
 
+- 网页后台任务不再插入聊天气泡，统一放入新的底部“任务”标签页；该页同时提供定时任务管理，后台任务的结构化输出抽屉和继续/停止/丢弃操作保持不变；
+- 文档索引、README、命令、架构、Web、安全、开发和 AGENTS 说明补充定时任务、`__schedule`、`__time` 写时间/时区和任务页；主机测试增加到 586 项；
 - `__ask` 选项上限从 4 提高到 8，问题总文本上限从 1600 提高到 2400；
 - `stream_idle_timeout` 默认值从 120 秒提高到 300 秒；缺少 `stream_first_token_timeout` 且值仍为 120 的旧配置在加载时自动迁移，之后显式设置的 120 秒会保留；
 - 新增 `tools/check.py` 主机门禁（编译 + 全套/快速测试）、`tools/deploy.py --changed` 增量部署和 `tools/device_quick_smoke.py` 设备快速烟雾；

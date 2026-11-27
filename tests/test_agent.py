@@ -1420,6 +1420,38 @@ class AgentTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("unavailable", result.error)
 
+    def test_background_tool_stop_discard_drops_result(self):
+        class Runner:
+            def __init__(self):
+                self.calls = []
+
+            def background_active(self):
+                return True
+
+            def background_view(self, job_id=None):
+                return {
+                    "id": 5, "phase": "running", "task": "draw",
+                    "note": "dashboard", "elapsed_ms": 10, "timeout_s": 0,
+                    "stop_requested": False, "discard_on_finish": False,
+                    "result": None, "error": "",
+                }
+
+            def stop_background(self, reason="", job_id=None, discard=False):
+                self.calls.append((reason, job_id, discard))
+                return 1
+
+        runner = Runner()
+        executor = Executor(DummyBoard())
+        executor.main_runner = runner
+        agent = Agent(
+            DummyConfig(), FakeLLM(), DummyBoard(), executor=executor)
+        result = agent._run_background_tool(
+            {"action": "stop_discard", "id": 5})
+        self.assertTrue(result.ok, result.error)
+        self.assertIn("Stop and discard", result.output)
+        self.assertIn("will be dropped", result.output)
+        self.assertEqual([("requested by model", 5, True)], runner.calls)
+
     def test_background_tool_lists_manages_multiple_jobs(self):
         class Runner:
             def __init__(self):

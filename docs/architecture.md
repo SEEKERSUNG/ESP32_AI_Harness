@@ -55,9 +55,10 @@ ESP32-S3 的 PSRAM 使完整 Harness 环境下重新建立 TLS 连接不再受�
 - **后台 worker 线程**：`BackgroundPool` 为每个任务创建一个 `_thread`（默认 32 KB 栈），最多同时运行 `background_max_jobs` 个（默认 4，范围 1–4），其余排队。启动 worker 前会关闭空闲 HTTP/TLS 连接并 GC；`_thread.start_new_thread` 因 ESP-IDF 内部堆不足失败时，会依次尝试 32/24/16/12/8 KB 栈，仍失败才把错误回传。Worker 不得调用 `os.dupterm`、`machine.reset` 或喂狗；输出通过执行运行时的线程级 `print` 路由器进入任务自己的有界缓冲区。
 - **UIRouter**：`Application.ui` 按线程 ID 路由输出。串口主线程始终解析到 `SerialUI`；Web 线程在请求期间绑定 `WebTurnSink` 或 `CommandCaptureSink`，结束后注销。Agent 回调固定绑定 `Application.show_*`，不交换回调。
 - **单回合锁**：`turn_lock` 保护模型回合、配置写入、Wi-Fi 切换、save/discard 等变更操作。后台任务运行期间，串口会话、`web-chat`、前台 `web-run`、`web-continue`、`auto-continue` 和后台控制仍可获取回合锁；配置/维护类 Web 操作仍返回 409，`is_busy()` 同时阻止 Web 空闲 tick 的网络维护。
-- **主线程执行 handoff**：Web 线程需要执行前台生成代码或 Workspace 脚本时，把可调用对象放入 `main_request`，串口主线程在 `SerialUI.readline` 的空闲钩子 `Application.idle()` 中执行并发布结果。`Executor.execute()` 检测到非主线程时会通过 `run_on_main()` 回到主线程；后台任务的 worker executor 不设置 `main_runner`，因此直接在自己的线程运行。AUTO 模式且 `auto_feedback=true` 时，同一个空闲钩子还会自动提交已完成的后台结果并继续模型对话；它只在顶层 `esp32>` 提示符、没有待执行代码/Skill/问题且串口没有已缓冲命令时触发，手动模式保留显式继续/丢弃。自动继续的 reasoning/content 块同时写入有界 `LiveTurn` 缓冲，`GET /api/live` 供网页增量拉取；该缓冲只用于显示，权威上下文仍是继续完成后的 `agent.history`。
-- **后台任务**：`BackgroundPool` 管理 `queued → running → ready/error`、编号、备注、耗时、停止请求、结果队列和 `/state/background.json`。网页手动运行可选 `mode=foreground`（回主线程）或 `mode=background`（新 worker）；AUTO 模式创建后台任务，槽位满时排队。短任务优先前台；工作区脚本可用 `__workspace background=true` 或 `/workspace run bg <path> [timeout]` 进入同一后台队列。`begin_operation()` 允许后台任务与前台/对话并行，但 `/clear`、`/repl`、`/factory-reset`、回退和 Web 配置在任务运行期间被拒绝。`Application.stop_background(reason, job_id)` 设置单个任务的协作取消标志；`__background stop`、`POST /api/background/stop` 和 `/background stop` 调用同一入口。`timeout=0`/`infinite` 让后台任务没有截止时间，仍受协作检查和 30 秒看门狗约束。`/api/status.backgrounds` 返回所有任务快照，`background` 保留主任务的兼容视图；`turn_busy` 与 `busy` 分别表示回合锁和包含后台任务的忙碌状态。完成后由 `/api/continue`（或串口 `/continue [id]`）逐个提交观察并继续模型；结果观察带原任务摘要，存在待执行项时等待处理后再继续。
-- **看门狗**：`Application.feed()` 只在主线程且不在执行前台生成代码/Workspace 脚本时喂狗。网页请求、TLS、模型思考和后台任务期间由空闲主线程喂狗。Worker 的 `feed_execution()` 在主线程之外是空操作，避免后台任务掩盖主线程阻塞。执行器在协作式截止检查、`range()` 插桩和 `time.sleep()` 代理中调用 `feed_execution()`，因此长但可协作的前台程序能超过 30 秒而不复位；完全不调用钩子的前台代码仍约在 `watchdog_ms` 后复位并走恢复流程。
+- **主线程执行 handoff**：Web 线程需要执行前台生成代码或 Workspace 脚本时，把可调用对象放入 `main_request`，串口主线程在 `SerialUI.readline` 的空闲钩子 `Application.idle()` 中执行并发布结果。`Executor.execute()` 检测到非主线程时会通过 `run_on_main()` 回到主线程；后台任务的 worker executor 不设置 `main_runner`，因此直接在自己的线程运行。AUTO 模式且 `auto_feedback=true` 时，同一个空闲钩子还会自动提交已完成的后台结果并继续模型对话；它只在顶层 `esp32>` 提示符、没有待执行代码/Skill/问题且串口没有已缓冲命令时触发，手动模式保留显式继续/丢弃。自动继续的 reasoning/content 块同时写入有界 `LiveTurn` 缓冲，`GET /api/live` 供网页增量拉取；`LiveTurn.begin(separate_turn=True)` 标记这是一条独立消息，网页据此新建 turn 卡片，后台/定时续答不会与上一条回复合并。该缓冲只用于显示，权威上下文仍是继续完成后的 `agent.history`；刷新历史时 `Local ESP32 background execution result` 观察也会开启新的 turn。
+- **后台任务**：`BackgroundPool` 管理 `queued → running → ready/error`、编号、备注、耗时、停止请求、结果队列和 `/state/background.json`。网页手动运行可选 `mode=foreground`（回主线程）或 `mode=background`（新 worker）；AUTO 模式创建后台任务，槽位满时排队。短任务优先前台；工作区脚本可用 `__workspace background=true` 或 `/workspace run bg <path> [timeout]` 进入同一后台队列。`begin_operation()` 允许后台任务与前台/对话并行，但 `/clear`、`/repl`、`/factory-reset`、回退和 Web 配置在任务运行期间被拒绝。`Application.stop_background(reason, job_id, discard=False)` 设置单个任务的协作取消标志；`discard=True` 会立即移除排队任务，并给运行中任务设置 `discard_on_finish`，worker 到达检查点后由 `BackgroundPool._finish` 直接移除而不产生 ready 结果。`__background stop|stop_discard`、`POST /api/background/stop {"discard":?}` 和 `/background stop|stopdiscard` 调用同一入口；`discard_on_finish` 会被持久化并在重启恢复时跳过。`timeout=0`/`infinite` 让后台任务没有截止时间，仍受协作检查和 30 秒看门狗约束。`/api/status.backgrounds` 返回所有任务快照，`background` 保留主任务的兼容视图；`turn_busy` 与 `busy` 分别表示回合锁和包含后台任务的忙碌状态。完成后由 `/api/continue`（或串口 `/continue [id]`）逐个提交观察并继续模型；结果观察带原任务摘要，存在待执行项时等待处理后再继续。
+- **定时任务**：`Scheduler` 只在内存和 `/state/schedules.json` 中维护任务与下一次 UTC epoch；实际执行由串口主线程的同一个 `Application.idle()` 钩子驱动。每轮只取最早到期的任务：提示词任务先取得回合锁，再执行正常的 `prepare_cloud`/`agent.ask`/`show_response` 流程，因此生成的代码仍走 AUTO/确认；代码任务直接调用 `_create_background_job` 进入 `BackgroundPool`。`begin_run` 标记 `running_since` 并持久化，`finish_run` 才推进下一次时间或停用一次性任务；设备在运行中重启会保留 `next_run` 并在下次空闲时重试（至少一次）。失败后 60 秒重试，最多 3 次。RTC 年份早于 2025 时整体跳过，避免复位后的默认时间触发任务。网页只能读/改任务，不能直接执行，`action=run` 只是把 `next_run` 设为当前时间并排队。
+- **看门狗**：`Application.feed()` 只在主线程且不在执行前台生成代码/Workspace 脚本时喂狗。网页请求、TLS、模型思考和后台任务期间由空闲主线程喂狗。Worker 的 `feed_execution()` 在主线程之外是空操作，避免后台任务掩盖主线程阻塞。执行器在协作式截止检查、`range()`/所有 `while` 条件插桩和 `time.sleep()` 代理中调用 `feed_execution()`，因此长但可协作的前台程序能超过 30 秒而不复位；C/SPI 阻塞或超长非 `range` 的 `for` 循环仍约在 `watchdog_ms` 后复位并走恢复流程。
 - **AP/STA**：`Network` 维护 AP/STA 状态缓存和互斥锁。启动时按“无 SSID → AP-only；连接失败 → AP；已设置管理密码且 STA 成功 → 关闭 AP（宽限后）”运行。AP 截止时间在首次安排后保持，重复模型请求不会续期；只有真实 STA 掉线恢复或显式切换目标网络才重新计算宽限期。Web 线程空闲 tick 负责 AP 宽限关闭、断线开 AP、STA 重连和延迟 Wi-Fi 切换。
 
 Web 线程和后台 worker 绝不调用 `os.dupterm` 或 `machine.reset`；需要通知串口时通过 `Application.queue_notice`，由主线程空闲时输出。前台执行仍使用 `os.dupterm` 捕获终端；后台执行使用 `Executor(isolated_output=True)`，由共享 `ExecutionRuntime` 按线程 ID 路由 `print`、`time.sleep*` 和嵌套 `exec` 的 `__harness_check`。最后一个执行结束后必须恢复原始 `builtins.print`、`builtins.__harness_check` 和 `sys.modules['time']`/`['utime']`；worker 直接写 `sys.stdout` 的内容可能无法归因，系统提示词要求后台代码用 `print()` 输出。请求头和正文的完整读取受 `web_request_timeout_s`（默认 30 秒）总期限约束，慢速断续发送不能无限占用连接。已接受的长模型回合仍按设计独占单 Web 线程，AP 宽限关闭、STA 重连和其他网页请求会延迟到回合结束。详见 [Web 控制台](web.md)。
@@ -118,10 +119,11 @@ MCP 调用在模型回合线程执行（串口主线程或 Web 线程）；Web �
 
 - `range(` 替换为 `__harness_range(`（跳过字符串、注释、`obj.range`、`my_range`）；
 - `while True:` / `while (1):` 替换为 `while __harness_check() or True:`；
+- 其他 `while <条件>:` 替换为 `while __harness_check() or (<条件>):`，扫描时跟踪括号、字符串、注释和 `:=`，避免把切片/字典/lambda 中的冒号当成循环头结束；
 - 临时把 `sys.modules["time"]`/`["utime"]` 指向代理对象，拦截 `sleep`/`sleep_ms`/`sleep_us`；
 - `scope` 提供 `__harness_check()`。
 
-每个钩子先检查所在线程的取消标志（后台任务）或全局停止请求，再检查 `ticks_ms` 截止时间；只有主线程的检查会调用 `feed_execution()` 喂狗。停止抛出 `ExecutionCancelled(BaseException)`，超时抛出 `ExecutionTimeout(BaseException)`，避免被生成代码的 `except Exception` 吞掉；执行器捕获后返回 `ExecutionResult(cancelled=True)` 或 `timed_out=True`，观察文本分别为 `status=cancelled`/`status=timeout`，并明确“设备未重启”以及正确的 `timeout=` 写法。`timeout=0`/`infinite` 表示无截止时间。模型应在 python fence 的开围栏同一行写 `timeout=45`；开围栏 info 优先，紧跟在闭合围栏后的独立 `timeout=` 行和代码块首个未再使用的独立 `timeout=N` 行作为兼容形式解析，其他说明文字中的 `timeout=` 不生效。`code_timeout_s` 是默认值，`code_timeout_max_s` 是上限；超时只结束当前 `exec`，先前代码创建的线程仍可能运行。共享 `ExecutionRuntime` 为每个线程维护上下文栈，并临时提供线程级的 `__harness_check`、`print` 和 `time` 路由；因此生成代码通过 `exec(source, separate_globals)` 动态加载 `/workspace` 脚本时仍能协作停止，后台任务之间也不会串输出。最后一个执行结束后恢复所有全局钩子。复杂 `while` 条件、C 级阻塞调用和不经过钩子的代码仍由看门狗兜底。
+每个钩子先检查所在线程的取消标志（后台任务）或全局停止请求，再检查 `ticks_ms` 截止时间；只有主线程的检查会调用 `feed_execution()` 喂狗。停止抛出 `ExecutionCancelled(BaseException)`，超时抛出 `ExecutionTimeout(BaseException)`，避免被生成代码的 `except Exception` 吞掉；执行器捕获后返回 `ExecutionResult(cancelled=True)` 或 `timed_out=True`，观察文本分别为 `status=cancelled`/`status=timeout`，并明确“设备未重启”以及正确的 `timeout=` 写法。`timeout=0`/`infinite` 表示无截止时间。模型应在 python fence 的开围栏同一行写 `timeout=45`；开围栏 info 优先，紧跟在闭合围栏后的独立 `timeout=` 行和代码块首个未再使用的独立 `timeout=N` 行作为兼容形式解析，其他说明文字中的 `timeout=` 不生效。`code_timeout_s` 是默认值，`code_timeout_max_s` 是上限；超时只结束当前 `exec`，先前代码创建的线程仍可能运行。共享 `ExecutionRuntime` 为每个线程维护上下文栈，并临时提供线程级的 `__harness_check`、`print` 和 `time` 路由；因此生成代码通过 `exec(source, separate_globals)` 动态加载 `/workspace` 脚本时仍能协作停止，后台任务之间也不会串输出。最后一个执行结束后恢复所有全局钩子。C/SPI 级阻塞调用、超长非 `range` 的 `for` 循环和单次迭代内长时间阻塞仍由看门狗兜底。
 
 ## 硬件外设
 
@@ -139,7 +141,7 @@ MCP 调用在模型回合线程执行（串口主线程或 Web 线程）；Web �
 2. 模型返回解释，或恰好一个显式标记为 `python`/`py`/`micropython` 的代码块；无标签代码块只作为文本解释，避免把输出示例误当代码。
 3. 代码进入 `pending_source`，只展示，不自动运行。
 4. 用户执行 `/run` 并输入 `y`。
-5. 执行器插桩源码（`range`、`while True`、`time` 代理），编译代码，写入恢复标记和源码，然后运行。
+5. 执行器插桩源码（`range`、所有 `while` 条件、`time` 代理），编译代码，写入恢复标记和源码，然后运行。
 6. ESP32 的 `os.dupterm()` 将输出同时送到串口和有界缓冲区；控制台不再重复打印已实时显示的输出。异常通过 `sys.print_exception()` 捕获；协作式超时返回 `status=timeout`，不打印为普通异常。
 7. 正常结束、超时或捕获异常后清除恢复标记，结果加入本地会话并写入持久化文件。
 8. 默认将结果发送给模型；修复代码回到第 3 步，且必须重新确认。
@@ -147,7 +149,7 @@ MCP 调用在模型回合线程执行（串口主线程或 Web 线程）；Web �
 
 后台模式下，第 5–7 步由 `BackgroundPool._work()` 在该任务的 worker 线程执行，Web 回合在第 4 步后立即结束；第 7 步的结果先进入该任务的 `ready` 状态并写入 `/state/background.json`，第 8 步由 `/api/continue` 或 `/continue [id]` 对某个结果触发。多个任务可以同时运行，也可以与主线程上的前台执行并行；各自的结果独立提交。用户可随时用 `/undo`/`/api/rewind` 截断当前 `history` 到某条真实用户消息之前，但任务运行期间会拒绝回退；回退不会回滚已经执行过的设备操作。
 
-模型接收响应期间 Harness 持续喂狗；默认看门狗为 30 秒。生成代码默认 20 秒截止时间，模型可声明更长的 `timeout`。协作式钩子会喂狗并在截止时间抛出内部超时；完全不经过钩子的死循环仍会触发看门狗复位，复位后将源码恢复为待审状态，但不会自动执行。
+模型接收响应期间 Harness 持续喂狗；默认看门狗为 30 秒。生成代码默认 20 秒截止时间，模型可声明更长的 `timeout`。协作式钩子会喂狗并在截止时间抛出内部超时；C/SPI 级阻塞或超长非 `range` 的 `for` 循环仍会触发看门狗复位，复位后将源码恢复为待审状态，但不会自动执行。
 
 ## 模型响应诊断与流式传输
 
@@ -192,6 +194,7 @@ thinking 级别只有四档：`disabled`（关闭）、`low`、`high`、`max`；
 | `http_tool.py` | 公共 HTTP(S) 抓取/下载、SSRF 地址校验、重定向校验、大小限制 |
 | `conversation.py` | 有界、原子的对话、摘要和多后台任务记录持久化 |
 | `background.py` | 多后台任务表、worker 线程、并发上限/排队、停止、备注、视图、有界持久化 |
+| `schedule.py` | 定时任务校验/状态机、UTC epoch 与本地时间换算、一次性/间隔/每日排期、失败重试、`/state/schedules.json` 持久化和有界视图 |
 | `http_client.py` | HTTP/1.1、TLS、超时、Content-Length、Chunked、增量正文读取、大小限制 |
 | `skills.py` | `/skills/<name>/SKILL.md` 存储、frontmatter、读取和删除 |
 | `memory.py` | `/MEMORY.md` 创建、读取、追加、删除、替换、清空和长度限制 |
