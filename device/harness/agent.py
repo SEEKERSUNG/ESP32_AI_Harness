@@ -1700,6 +1700,85 @@ OBSERVATION_PREFIXES = (
 )
 
 
+def _is_context_meta_question(text):
+    """True for questions asking whether the harness remembers the task.
+
+    Those messages must not become the session anchor when the anchor was
+    lost: doing so hides the real first task from later compactions.
+    """
+    value = str(text or "").lower()
+    if not value:
+        return False
+    strong_memory = (
+        "记不记得", "还记得", "remember what", "originally ask",
+        "first request", "what did i ask", "what did i originally",
+    )
+    weak_memory = ("一开始", "最初", "刚才让你", "之前让你")
+    goal_words = ("干什么", "做什么", "说的", "问的", "要求")
+    context_words = (
+        "压缩", "上下文", "摘要", "记忆", "compact", "context", "summary",
+    )
+    hit_memory = False
+    for word in strong_memory:
+        if word in value:
+            hit_memory = True
+            break
+    if not hit_memory:
+        hit_weak = False
+        for word in weak_memory:
+            if word in value:
+                hit_weak = True
+                break
+        if hit_weak:
+            for word in goal_words:
+                if word in value:
+                    hit_memory = True
+                    break
+    if not hit_memory:
+        return False
+    for word in context_words:
+        if word in value:
+            return True
+    return False
+
+
+def _summary_goal(summary, limit=1000):
+    """Extract the user-goal section from a compaction summary."""
+    text = str(summary or "").replace("\r\n", "\n")
+    for marker in ("### 用户目标", "## 用户目标", "用户目标：", "用户目标:"):
+        position = text.find(marker)
+        if position < 0:
+            continue
+        lines = text[position + len(marker):].split("\n")
+        collected = []
+        started = False
+        for line in lines:
+            line = line.strip()
+            if not line:
+                if started:
+                    break
+                continue
+            if line.startswith("#"):
+                break
+            collected.append(line)
+            started = True
+        if collected:
+            return "\n".join(collected)[:limit]
+    return ""
+
+
+def _first_user_anchor(history):
+    for message in history:
+        if message_kind(message) != "user":
+            continue
+        content = message.get("content", "")
+        if not isinstance(content, str):
+            content = str(content)
+        if content.strip() and not _is_context_meta_question(content):
+            return content
+    return ""
+
+
 def message_kind(message):
     """Classify a history entry for the web view and context rewind.
 
@@ -1836,7 +1915,11 @@ class Agent:
         if len(text) > self.config.get("history_chars"):
             raise AgentError("Task is larger than the configured history budget")
         request_message = user_message(text)
+        if _is_context_meta_question(self.original_request):
+            self.original_request = ""
         if not self.original_request:
+            self.original_request = _first_user_anchor(self.history)
+        if not self.original_request and not _is_context_meta_question(text):
             self.original_request = text[:input_limit]
         self.turns = 0
         self.last_task = text[:200]
@@ -4539,18 +4622,23 @@ class Agent:
         self.original_request = state.get("original_request") or ""
         if not isinstance(self.original_request, str):
             self.original_request = ""
+        if _is_context_meta_question(self.original_request):
+            self.original_request = ""
         if not self.original_request:
-            if self.summary:
+            # Prefer the real first user message over a reconstructed summary
+            # anchor: a summary may have omitted the original task.
+            self.original_request = _first_user_anchor(self.history)
+        if not self.original_request and self.summary:
+            goal = _summary_goal(self.summary)
+            if goal:
+                self.original_request = (
+                    "Original goal recovered from summary:\n" + goal)
+            else:
                 self.original_request = (
                     "Earlier conversation topic (reconstructed from summary; "
                     "the exact first message predates the anchor):\n"
                     + self.summary[:1000]
                 )
-            else:
-                for message in self.history:
-                    if message_kind(message) == "user":
-                        self.original_request = message.get("content", "")
-                        break
         self.original_request = self.original_request[:4096]
         self.turns = 0
         self.last_task = ""
@@ -4582,14 +4670,51 @@ class Agent:
             self.recovered_pending = True
             self.recovered_execution = False
 
+    def set_original_request(self, text):
+        value = str(text or "").strip()
+        if not value:
+            raise AgentError("Original request anchor is empty")
+        self.original_request = value[:4096]
+        self._persist()
+        return self.original_request
+
+    def rebuild_original_request(self):
+        """Recover the session anchor after it was lost or polluted."""
+        self.original_request = ""
+        if self.summary:
+            goal = _summary_goal(self.summary)
+            if goal:
+                self.original_request = (
+                    "Original goal recovered from summary:\n" + goal)
+        if not self.original_request:
+            self.original_request = _first_user_anchor(self.history)
+        self.original_request = self.original_request[:4096]
+        self._persist()
+        return self.original_request
+
     def compact(self):
         if self._compacting:
             raise AgentError("Compaction is already running")
         if not self.history:
             raise AgentError("Conversation is empty")
-        result = self._compact_history()
+        context_limit = self.config.get("context_tokens", 200000)
+        reserved = self._int_config("max_tokens", 32768) + 128
+        target_tokens = (
+            context_limit - reserved
+            - (estimate_tokens(self._system_content()) + 4)
+            - self._summary_budget_tokens())
+        if target_tokens < 1024:
+            target_tokens = 1024
+        result = self._compact_history(target_tokens)
         self._context_warned = False
         return result
+
+    def _summary_budget_tokens(self):
+        try:
+            limit = int(self.config.get("summary_char_limit", 8192))
+        except (TypeError, ValueError):
+            limit = 8192
+        return max(64, limit // 4) + 8
 
     def _system_tokens_now(self):
         tokens = estimate_tokens(self._system_content()) + 4
@@ -4725,11 +4850,12 @@ class Agent:
 
     def _maybe_auto_compact(self, extra_messages=None):
         extra_messages = extra_messages or []
+        system_tokens = estimate_tokens(self._system_content()) + 4
+        extra_tokens = self._messages_tokens(extra_messages)
         tokens = (
-            estimate_tokens(self._system_content())
-            + 4
+            system_tokens
             + self._messages_tokens(self.history)
-            + self._messages_tokens(extra_messages)
+            + extra_tokens
         )
         context_limit = self.config.get("context_tokens", 200000)
         auto_compact = bool(self.config.get("auto_compact", True))
@@ -4758,14 +4884,19 @@ class Agent:
             )
         if tokens < threshold:
             return False
-        if len(self.history) <= self.config.get("compact_keep_messages", 4):
+        if len(self.history) <= 1:
             return False
         self._notice(
             "Context is about %s tokens (auto-compact at %s); compacting history..."
             % (tokens, threshold)
         )
+        target_tokens = (
+            threshold - system_tokens - extra_tokens
+            - self._summary_budget_tokens())
+        if target_tokens < 1024:
+            target_tokens = 1024
         try:
-            result = self._compact_history()
+            result = self._compact_history(target_tokens)
             self._context_warned = False
             return result
         except Exception as exc:
@@ -4800,31 +4931,65 @@ class Agent:
             timeout=timeout,
         )
 
-    def _compact_history(self):
+    def _compact_history(self, target_tokens=None):
         keep = int(self.config.get("compact_keep_messages", 4))
         if keep < 1:
             keep = 1
-        if keep >= len(self.history):
-            self._notice("Nothing to compact; history already fits the keep window.")
+        if len(self.history) <= 1:
+            self._notice("Nothing to compact; history has only one message.")
             return False
+        # The configured window is a preference, not a reason to let a few
+        # huge messages exceed the context budget. Shrink it until the kept
+        # tail fits the budget (but always leave at least one message to
+        # summarize).
+        if keep >= len(self.history):
+            keep = len(self.history) - 1
+        if target_tokens is not None:
+            while keep > 1 and (
+                    self._messages_tokens(self.history[-keep:]) > target_tokens):
+                keep -= 1
+        if _is_context_meta_question(self.original_request):
+            self.original_request = ""
         if not self.original_request:
-            if self.summary:
+            # Prefer the earliest real user message; the summary may omit it.
+            self.original_request = _first_user_anchor(self.history)
+        if not self.original_request and self.summary:
+            goal = _summary_goal(self.summary)
+            if goal:
+                self.original_request = (
+                    "Original goal recovered from summary:\n" + goal)
+            else:
                 self.original_request = (
                     "Earlier conversation topic (reconstructed from summary; "
                     "the exact first message predates the anchor):\n"
                     + self.summary[:1000]
                 )
-            else:
-                for message in self.history:
-                    if message_kind(message) == "user":
-                        self.original_request = message.get("content", "")
-                        break
         old_messages = self.history[:-keep]
         input_limit = min(
             self.config.get("history_chars", 900000),
             self.config.get("summary_input_chars", 120000),
         )
-        transcript = self._summary_transcript(old_messages, input_limit)
+        anchor_prefix = ""
+        if self.original_request:
+            anchor_prefix = (
+                "Original user request (session anchor; preserve it and the "
+                "current task goals in the summary):\n"
+                + self.original_request[:2000]
+                + "\n\n"
+            )
+        existing_prefix = ""
+        if self.summary:
+            existing_prefix = (
+                "Existing summary of even older conversation:\n"
+                + self.summary
+                + "\n\nNew messages to merge:\n"
+            )
+        transcript_limit = (
+            input_limit - len(anchor_prefix) - len(existing_prefix))
+        if transcript_limit < 1024:
+            transcript_limit = 1024
+        transcript = self._summary_transcript(old_messages, transcript_limit)
+        transcript = anchor_prefix + existing_prefix + transcript
         summary_limit = int(self.config.get("summary_char_limit", 8192))
         if summary_limit < 256:
             summary_limit = 256
@@ -4837,13 +5002,6 @@ class Agent:
             "used by the user, at most %s characters."
             % summary_limit
         )
-        if self.summary:
-            transcript = (
-                "Existing summary of even older conversation:\n"
-                + self.summary
-                + "\n\nNew messages to merge:\n"
-                + transcript
-            )
         messages = [
             {"role": "system", "content": instructions},
             {"role": "user", "content": transcript},

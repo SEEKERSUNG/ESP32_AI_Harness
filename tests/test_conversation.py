@@ -213,6 +213,17 @@ class ConversationStoreTests(unittest.TestCase):
         self.assertEqual("the first task", agent.original_request)
         self.assertEqual("old task", agent.history[0]["content"])
 
+    def test_restore_prefers_the_real_first_user_message_over_summary(self):
+        config = self.config()
+        store = ConversationStore(self.directory.name, config)
+        store.save([
+            {"role": "user", "content": "the real task"},
+            {"role": "assistant", "content": "answer"},
+        ], "a vague summary", "")
+        agent = Agent(config, FakeLLM(), DummyBoard(), conversation=store)
+        agent.restore_conversation(store.load())
+        self.assertEqual("the real task", agent.original_request)
+
     def test_failed_turn_persists_user_message_and_error(self):
         config = self.config(api_retries=0, api_retry_base_ms=0)
         store = ConversationStore(self.directory.name, config)

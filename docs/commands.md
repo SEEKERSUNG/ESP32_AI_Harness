@@ -37,7 +37,7 @@ URL:  http://192.168.4.1/
 
 网页登录后可对话（输入框直接执行 `/` 命令）、通过侧边栏查看状态/任务/Skill/文件和修改 Wi-Fi/模型/API Key/CA/管理密码。网页与串口共享会话，模型回合互斥；网页触发的代码仍在串口主线程执行，串口只读命令在网页回合期间可用。
 
-网页 `/api/command` 接受所有**非交互**命令，包括 `/status`、`/history`、`/context`、`/summary`、`/code`、`/discard`、`/undo`、`/rewind`、`/skills`、`/skill-show`、`/skill-delete`、`/thinking`、`/auto`、`/native`、`/search`、`/test`、`/compact`、`/clear`、`/memory`、`/workspace`（`run` 除外）、`/mcp`、`/http`、`/background`、`/bg`、`/schedule` 和只读 `/web`。需要写文件或改变风险设置的命令会在网页弹出确认对话框；确认后重试执行。
+网页 `/api/command` 接受所有**非交互**命令，包括 `/status`、`/history`、`/context`、`/summary`、`/anchor`、`/code`、`/discard`、`/undo`、`/rewind`、`/skills`、`/skill-show`、`/skill-delete`、`/thinking`、`/auto`、`/native`、`/search`、`/test`、`/compact`、`/clear`、`/memory`、`/workspace`（`run` 除外）、`/mcp`、`/http`、`/background`、`/bg`、`/schedule` 和只读 `/web`。需要写文件或改变风险设置的命令会在网页弹出确认对话框；确认后重试执行。
 
 `/run`、`/run bg`、`/workspace run` 和 `/continue` 也可从网页对话输入框以 `/` 开头执行；生成/工作区代码通过主线程 handoff 运行，执行前浏览器会请求确认。以下命令仍需要第二次输入或重启设备，使用对应的专用表单/按钮（`/repl` 仅限串口）：
 
@@ -57,7 +57,8 @@ URL:  http://192.168.4.1/
 | `/history` | 显示当前有界历史；不要把它当作秘密管理器 |
 | `/context` | 显示估算 token、消息数、摘要和自动压缩阈值 |
 | `/compact` | 立即调用模型压缩较早历史，保留最近消息 |
-| `/summary` | 显示当前会话摘要 |
+| `/summary` | 显示当前会话摘要和原始请求锚点 |
+| `/anchor` | 显示/重建原始请求锚点；`/anchor reset` 从摘要或历史恢复，`/anchor set TEXT` 手动设置 |
 | `/undo [N]` / `/rewind [N]` | 删除第 N 条最近用户消息及其后的全部回复（默认 N=1） |
 | `/clear` | 清除历史、摘要、待执行代码、最近执行状态和持久化文件 |
 
@@ -65,7 +66,7 @@ URL:  http://192.168.4.1/
 
 `/undo` 只回退对话上下文，不恢复工作区文件、Skill、Memory 或执行造成的设备状态；它会同时清除待执行代码、Skill 提案、待回答问题和最近执行结果。网页不再提供顶栏回退按钮；每条真实用户消息旁显示“回退到这里”，实时消息在正常完成或手动停止后设备回合结束时补上按钮，刷新历史后同样显示。压缩摘要不会被重建；历史索引以当前 `agent.history` 为准。
 
-自动压缩默认开启：估算上下文达到 `auto_compact_tokens`（默认 150000，可在网页设置调整，必须小于 `context_tokens`）时，Harness 用流式请求摘要较早消息，保留最近 `compact_keep_messages` 条，并把摘要放入系统提示词。首个用户请求会作为会话锚点单独保存并始终注入系统提示词，因此压缩后仍能回答“最初问的是什么”；`/clear` 才会重置锚点。摘要请求至少使用 `summary_timeout`（默认 300 秒），并复用 API 重试策略。`/compact` 可随时手动执行。
+自动压缩默认开启：估算上下文达到 `auto_compact_tokens`（默认 150000，可在网页设置调整，必须小于 `context_tokens`）时，Harness 用流式请求摘要较早消息，按预算保留最近消息（优先 `compact_keep_messages` 条；单条过大时会缩小窗口，至少保留最新 1 条），并把摘要放入系统提示词。首个用户请求会作为会话锚点单独保存并始终注入系统提示词，因此压缩后仍能回答“最初问的是什么”；`/clear` 才会重置锚点。摘要请求至少使用 `summary_timeout`（默认 300 秒），并复用 API 重试策略。`/compact` 可随时手动执行。
 
 ## MEMORY.md
 
@@ -216,7 +217,7 @@ Harness 不再支持模型自定义可执行 Tool。模型通过原生 function 
 
 短程序应优先在前台执行；只有长时间运行、需要与用户继续交互并行，或用户明确要求时才使用后台，并应说明原因。`background_execution=true`（默认）时，网页 AUTO 运行和手动“后台运行”会创建后台任务；每个任务在自己的 worker 线程执行。`__workspace action=run` 支持 `background=true`，串口可用 `/workspace run bg <path>` 直接把工作区脚本放入后台。`/api/chat` 或 `/api/run` 的 NDJSON 流在任务入队后结束，浏览器通过 `/api/status.backgrounds` 轮询所有任务。AUTO 模式（`auto_run=true`）且 `auto_feedback=true` 时，设备主线程在 `esp32>` 空闲时会自动把已完成结果写入上下文并继续模型对话；网页只显示状态，不再要求手动选择“继续/丢弃”，即使浏览器标签页关闭或隐藏也能继续。自动继续期间网页轮询 `GET /api/live` 增量显示回复，完成后以 `/api/history` 为准。AUTO 关闭或 `auto_feedback=false` 时保留手动“继续/丢弃”按钮和串口 `/continue`。最多同时运行 `background_max_jobs` 个（默认 4，可在“设置 → Harness 行为”改为 1–4），超出的任务保持 `queued`，槽位空出后自动启动。结果观察会带上原任务摘要，并提示“其他后台任务可能仍在运行、后续用户消息可能无关”，避免把另外插入的问题混进原任务。任务记录保存在 `/state/background.json`（受 `persist_conversation` 控制，默认最多 8 条）；达到 `background_max_records` 后创建新任务会被拒绝，错误会给出 `retained N/M` 和至少需要继续/丢弃的条数，`/background list` 头部也显示该配额。设备重启后已完成结果可恢复，未完成记录显示为 `error` 且不会自动重跑。降低 `background_max_records` 只会裁剪失败/非 ready 记录，不会静默丢弃可继续的 ready 结果。
 
-后台运行期间**仍可发送新对话、前台运行代码或再创建后台任务**。AUTO 开启时，新生成的代码会创建新的后台任务；槽位满则排队。手动待执行卡片提供“前台运行”和“后台运行”两个按钮；前台运行回到串口主线程，与后台任务并行。`__workspace run` 也回到主线程，可以运行。配置写入、回退、`/clear`、`/repl`、恢复出厂设置等维护操作在任务运行期间仍被拒绝。AUTO 模式下新的对话结束后，如果某个后台结果已就绪，设备主线程会按 `auto_feedback` 自动继续该任务（手动模式由网页轮询继续）；若存在待执行代码、Skill 提案或问题，则先等待处理，之后再自动继续。`/api/status` 的 `turn_busy` 只表示模型回合锁，`busy` 还包含后台任务。
+后台运行期间**仍可发送新对话、前台运行代码或再创建后台任务**。AUTO 开启时，新生成的代码会创建新的后台任务；槽位满则排队。手动待执行卡片提供“前台运行”和“后台运行”两个按钮；前台运行回到串口主线程，与后台任务并行。`__workspace run` 也回到主线程，可以运行。网页模型/Harness 配置在任务运行期间可以修改（只影响后续回合）；Wi-Fi/CA、回退、`/clear`、`/repl` 和恢复出厂设置等维护操作仍被拒绝。AUTO 模式下新的对话结束后，如果某个后台结果已就绪，设备主线程会按 `auto_feedback` 自动继续该任务（手动模式由网页轮询继续）；若存在待执行代码、Skill 提案或问题，则先等待处理，之后再自动继续。`/api/status` 的 `turn_busy` 只表示模型回合锁，`busy` 还包含后台任务。
 
 AI 可通过内置 `__background` 工具管理多个任务：
 

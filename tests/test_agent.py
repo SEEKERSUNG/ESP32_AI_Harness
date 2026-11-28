@@ -15,6 +15,8 @@ from harness.agent import (
     parse_skill_proposal,
     parse_tool_call,
     response_asks_question,
+    _is_context_meta_question,
+    _summary_goal,
     system_prompt,
 )
 from harness.device import Board
@@ -345,6 +347,56 @@ class CompactionTests(unittest.TestCase):
         self.assertIn("COM8", transcript)
         self.assertEqual("Merged summary", agent.summary)
 
+    def test_context_meta_question_is_not_used_as_anchor(self):
+        self.assertTrue(_is_context_meta_question(
+            "刚刚对上下文做了压缩，你还记不记得我一开始让你干什么了？"))
+        self.assertTrue(_is_context_meta_question(
+            "Do you remember what I first asked about the context summary?"))
+        self.assertFalse(_is_context_meta_question("修复压缩上下文功能"))
+        self.assertEqual(
+            "继续修复 harness_issues.md",
+            _summary_goal(
+                "## 进度\n\n### 用户目标\n继续修复 harness_issues.md\n\n"
+                "### 下一步"))
+
+    def test_rebuild_original_request_uses_the_summary_goal(self):
+        agent = Agent(DummyConfig(), FakeLLM(), DummyBoard())
+        agent.summary = "### 用户目标\n继续修复 harness_issues.md\n\n### 下一步"
+        agent.original_request = "print('RAWOK')"
+        agent.history = [{"role": "user", "content": "print('RAWOK')"}]
+        value = agent.rebuild_original_request()
+        self.assertIn("继续修复 harness_issues.md", value)
+        self.assertIn("Original goal recovered from summary", value)
+
+    def test_ask_replaces_a_meta_question_anchor(self):
+        agent = Agent(DummyConfig(), FakeLLM("answer"), DummyBoard())
+        agent.original_request = (
+            "刚刚对上下文做了压缩，你还记不记得我一开始让你干什么了？")
+        agent.ask("新的真实任务")
+        self.assertEqual("新的真实任务", agent.original_request)
+
+    def test_compaction_prefers_the_real_first_task_over_summary(self):
+        llm = FakeLLM("Compacted summary")
+        agent = Agent(
+            DummyConfig(
+                auto_compact=False, compact_keep_messages=2,
+                summary_char_limit=200),
+            llm, DummyBoard())
+        agent.summary = "A vague earlier summary"
+        agent.original_request = ""
+        agent.history = [
+            {"role": "user", "content": "the real original task"},
+            {"role": "assistant", "content": "answer"},
+            {"role": "user", "content": "recent task"},
+            {"role": "assistant", "content": "recent answer"},
+        ]
+        self.assertTrue(agent.compact())
+        self.assertEqual("the real original task", agent.original_request)
+        self.assertIn("the real original task", agent._system_content())
+        transcript = llm.calls[0][1]["content"]
+        self.assertIn("Original user request", transcript)
+        self.assertIn("the real original task", transcript)
+
     def test_manual_compaction_requires_enough_history(self):
         agent = Agent(DummyConfig(auto_compact=False, compact_keep_messages=4),
                       FakeLLM(), DummyBoard())
@@ -373,6 +425,52 @@ class CompactionTests(unittest.TestCase):
         self.assertEqual("Auto summary", agent.summary)
         self.assertIn("new question", agent.history[-2]["content"])
         self.assertEqual(2, len(llm.calls))
+
+    def test_auto_compaction_shrinks_the_keep_window_for_few_large_messages(self):
+        llm = FakeLLM("Auto summary")
+        config = DummyConfig(
+            auto_compact=True,
+            auto_compact_tokens=1000,
+            compact_keep_messages=4,
+            context_tokens=120000,
+            max_tokens=32768,
+            history_messages=20,
+            history_chars=1000000,
+        )
+        agent = Agent(config, llm, DummyBoard())
+        agent.history = [
+            {"role": "user", "content": "x" * 120000},
+            {"role": "assistant", "content": "y" * 120000},
+            {"role": "user", "content": "z" * 120000},
+            {"role": "assistant", "content": "w" * 120000},
+        ]
+        self.assertTrue(agent._maybe_auto_compact([]))
+        self.assertEqual("Auto summary", agent.summary)
+        self.assertEqual(1, len(agent.history))
+        self.assertIn("older messages omitted", llm.calls[0][1]["content"])
+
+    def test_manual_compaction_shrinks_the_keep_window_for_few_large_messages(self):
+        llm = FakeLLM("Manual summary")
+        config = DummyConfig(
+            auto_compact=False,
+            compact_keep_messages=4,
+            context_tokens=120000,
+            max_tokens=32768,
+            history_messages=20,
+            history_chars=1000000,
+        )
+        agent = Agent(config, llm, DummyBoard())
+        agent.history = [
+            {"role": "user", "content": "x" * 120000},
+            {"role": "assistant", "content": "y" * 120000},
+            {"role": "user", "content": "z" * 120000},
+            {"role": "assistant", "content": "w" * 120000},
+        ]
+        self.assertTrue(agent.compact())
+        self.assertEqual("Manual summary", agent.summary)
+        self.assertLess(len(agent.history), 4)
+        self.assertGreaterEqual(len(agent.history), 1)
+        self.assertIn("older messages omitted", llm.calls[0][1]["content"])
 
     def test_auto_compaction_failure_does_not_block_request(self):
         llm = FailingSummaryLLM()

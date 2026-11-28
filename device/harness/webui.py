@@ -787,7 +787,8 @@ var state = {
   liveGen:0, turnEl:null, scheduleKey:null, scheduleEditId:null,
   scheduleSeq:null, screen:'chat', settingsSection:'network',
   settingsLoaded:false, sidebarCollapsed:false, sidebarOpen:false,
-  files:[], filePath:'/', fileEditorPath:null, skills:null
+  files:[], filePath:'/', fileEditorPath:null, skills:null,
+  compacting:false
 };
 function $(id){return document.getElementById(id);}
 function setText(el,text){el.textContent = text == null ? '' : String(text);}
@@ -1020,6 +1021,9 @@ function renderStatusScreen(status){
   }
   setText($('statusLive'),status.live&&status.live.active?'接收中':'无');
   setText($('statusVersionShort'),status.version||'-');
+  if(state.compacting){
+    setText($('statusLine'),'正在压缩上下文… · '+(status.mode||'off'));
+  }
 }
 function statusConnectionText(status){
   var mode=status.mode||'off';
@@ -1980,7 +1984,7 @@ function restoreChatBehavior(){
   syncBehaviorControls(run,thinking.level||cfg.thinking_level||'high');
 }
 function syncBehaviorDisabled(){
-  var disabled=state.streaming||state.behaviorSaving;
+  var disabled=state.streaming||state.behaviorSaving||state.compacting;
   $('chatThinking').disabled=disabled;
   $('chatAuto').disabled=disabled;
 }
@@ -2027,6 +2031,23 @@ function setBusy(busy){
     var el=$(id); if(el) el.disabled=busy;
   });
 }
+function setCompacting(active){
+  state.compacting=!!active;
+  var button=$('compactBtn');
+  if(button){
+    button.disabled=!!active;
+    button.textContent=active?'压缩中…':'压缩上下文';
+  }
+  var input=$('chatInput'), send=$('sendBtn');
+  if(input) input.disabled=!!active||state.streaming;
+  if(send) send.disabled=!!active||state.streaming;
+  ['refreshBtn','historyBtn','clearBtn','compactBtn','testWifiBtn','testApiBtn'].forEach(function(id){
+    var el=$(id);
+    if(el) el.disabled=!!active||state.streaming;
+  });
+  syncBehaviorDisabled();
+  if(active) toast('正在压缩上下文，请稍候…');
+}
 function commandAffectsHistory(line){
   var command=String(line||'').split(/\s+/)[0].toLowerCase();
   return command==='/clear'||command==='/compact'||command==='/undo'||
@@ -2045,7 +2066,36 @@ function commandOutput(text,isError){
   bubbleBody(el,text);
   scrollPageBottomSoon();
 }
+function compactContext(){
+  if(state.compacting||state.streaming) return;
+  setCompacting(true);
+  var waiting=logMessage('system','正在压缩上下文，请稍候…','system');
+  post('/api/command',{line:'/compact'}).then(function(data){
+    if(data.ok===false){
+      toast('压缩失败: '+(data.error||'未知错误'));
+    }else{
+      var text=(data.output||'').replace(/\s+/g,' ').trim();
+      toast(text?text.slice(0,160):'上下文已压缩');
+      return refreshHistory().then(function(){
+        if(text) logMessage('system','压缩完成：'+text.slice(0,300),'system');
+      });
+    }
+    return refreshHistory();
+  }).catch(function(e){
+    toast('压缩失败: '+e.message);
+    refreshStatus().catch(function(){});
+  }).then(function(){
+    if(waiting&&waiting.parentNode) waiting.parentNode.removeChild(waiting);
+    setCompacting(false);
+    refreshStatus().catch(function(){});
+  });
+}
 function runCommand(line, confirmed){
+  var command=String(line||'').split(/\s+/)[0].toLowerCase();
+  if(command==='/compact'){
+    compactContext();
+    return;
+  }
   post('/api/command',{line:line,confirm:!!confirmed}).then(function(data){
     if(data.ok===false){
       commandOutput(data.output||'','');
@@ -2069,6 +2119,7 @@ function runCommand(line, confirmed){
 }
 function sendChat(event){
   if(event) event.preventDefault();
+  if(state.compacting){toast('正在压缩上下文，请稍候');return;}
   if(state.streaming) return;
   var input=$('chatInput'); var text=input.value.trim(); if(!text) return;
   input.value='';
@@ -2989,14 +3040,7 @@ document.addEventListener('DOMContentLoaded',function(){
       }).catch(function(e){toast(e.message);});
     }
   };
-  $('compactBtn').onclick=function(){
-    var button=this;button.disabled=true;
-    post('/api/command',{line:'/compact'}).then(function(data){
-      toast('上下文已压缩');
-      if(data.output) toast('压缩完成');
-      refreshStatus();
-    }).catch(function(e){toast(e.message);}).then(function(){button.disabled=false;});
-  };
+  $('compactBtn').onclick=function(){compactContext();};
   $('historyBtn').onclick=function(){refreshHistory().catch(function(e){toast(e.message);});};
   $('factoryResetBtn').onclick=function(){
     if(!$('factoryConfirm').checked){toast('请先勾选确认删除所有用户数据');return;}

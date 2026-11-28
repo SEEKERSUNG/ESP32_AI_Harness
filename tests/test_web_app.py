@@ -328,7 +328,7 @@ class FakeApp:
         if self.background_active() and source not in (
                 "web-chat", "web-run", "web-continue", "web-background-stop",
                 "web-background-discard", "web-discard", "web-save-skill",
-                "schedule", "serial"):
+                "web-config", "schedule", "serial"):
             return False
         if self.turn_lock is not None and not self.turn_lock.acquire(False):
             return False
@@ -1959,6 +1959,13 @@ class WebAppTests(unittest.TestCase):
                                    {"line": "/clear"}, token=token))
         self.assertEqual(200, writer.status)
         self.assertIn("web-command", self.app.operations)
+
+        main_calls = self.app.main_calls
+        writer = self.call(request("POST", "/api/command",
+                                   {"line": "/compact"}, token=token))
+        self.assertEqual(200, writer.status)
+        self.assertIn("output for /compact", writer.json["output"])
+        self.assertEqual(main_calls + 1, self.app.main_calls)
 
         for line in (
                 "/memory append note",

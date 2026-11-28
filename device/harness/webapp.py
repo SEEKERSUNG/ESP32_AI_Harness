@@ -1482,7 +1482,7 @@ class WebApp:
         command = parts[0].lower()
         args = parts[1:]
         known = (
-            "/help", "/status", "/history", "/context", "/summary", "/code",
+            "/help", "/status", "/history", "/context", "/summary", "/anchor", "/code",
             "/discard", "/undo", "/rewind", "/skills", "/skill-show",
             "/skill-delete", "/thinking", "/auto", "/native", "/search",
             "/test", "/compact", "/clear", "/memory", "/workspace",
@@ -1570,7 +1570,13 @@ class WebApp:
                 raise _error("Device is busy", 409, "busy")
         self.app.ui.bind(sink)
         try:
-            self.app.command(line)
+            if line.strip().lower() == "/compact":
+                # Compaction performs a model request. Run it on the serial
+                # main thread so the watchdog is fed and the shared HTTP
+                # client/session state is not used from the web thread.
+                self.app.run_on_main(lambda: self.app.command(line))
+            else:
+                self.app.command(line)
         except WebCommandConfirm as exc:
             writer.send_json(400, {"ok": False, "error": str(exc),
                                    "code": "confirm",

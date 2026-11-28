@@ -542,7 +542,9 @@ def run():
         shell.end_operation()
         assert shell.begin_operation("serial")
         shell.end_operation()
-        assert not shell.begin_operation("web-config")
+        assert shell.begin_operation("web-config")
+        shell.end_operation()
+        assert not shell.begin_operation("web-ca")
 
         foreground = shell.executor.execute("print('quick-foreground')")
         assert foreground.ok and "quick-foreground" in foreground.output

@@ -65,6 +65,7 @@ HELP = """Commands:
   /history              Show bounded conversation history
   /context              Show estimated context usage and compaction settings
   /compact              Summarize older context now and keep recent messages
+  /anchor [reset|set T] Show/reset the original request anchor
   /summary              Show the current conversation summary
   /memory               Show always-loaded MEMORY.md
   /memory append <text> Append a line to MEMORY.md
@@ -382,6 +383,8 @@ def command_is_exclusive(line):
     if command in read_only:
         return False
     if command == "/memory":
+        return bool(args)
+    if command == "/anchor":
         return bool(args)
     if command == "/auto":
         return bool(args)
@@ -1446,13 +1449,13 @@ class Application:
     def begin_operation(self, source):
         # Background jobs run on their own threads, so they no longer occupy
         # the main thread or the turn lock. New conversation turns and
-        # foreground runs may proceed. Configuration/maintenance web actions
-        # stay blocked until the jobs finish to avoid changing Wi-Fi or model
-        # state underneath running code.
+        # foreground runs may proceed. Model/harness config changes are also
+        # safe: jobs are already running code and only future model turns read
+        # the new settings. Wi-Fi, CA and maintenance actions stay blocked.
         if self.background_active() and source not in (
                 "web-chat", "web-run", "web-continue", "web-background-stop",
                 "web-background-discard", "web-discard", "web-save-skill",
-                "auto-continue", "schedule", "serial"):
+                "web-config", "auto-continue", "schedule", "serial"):
             return False
         if self.turn_lock is not None:
             if not self.turn_lock.acquire(False):
@@ -1630,8 +1633,8 @@ class Application:
         elif command == "/compact":
             if not self.agent.history:
                 self.ui.line("Conversation is empty.")
-            elif len(self.agent.history) <= self.config.get("compact_keep_messages", 4):
-                self.ui.line("Nothing to compact; history already fits the keep window.")
+            elif len(self.agent.history) <= 1:
+                self.ui.line("Nothing to compact; history has only one message.")
             else:
                 self.prepare_cloud()
                 self.ui.line("Compacting older history...")
@@ -1639,6 +1642,8 @@ class Application:
                     self.show_context()
         elif command == "/summary":
             self.show_summary()
+        elif command == "/anchor":
+            self.configure_anchor(args)
         elif command == "/memory":
             self.memory_command(args)
         elif command == "/search":
@@ -3290,13 +3295,45 @@ class Application:
         self.ui.line("Streaming: %s; thinking: %s" % (
             self.config.get("stream", True), self.config.get("thinking_level")))
 
+    def configure_anchor(self, args):
+        if not args:
+            if self.agent.original_request:
+                self.ui.line("--- original request (session anchor) ---")
+                self.ui.line(self.agent.original_request)
+                self.ui.line("--- end original request ---")
+            else:
+                self.ui.line("No original request anchor is set.")
+            return
+        action = args[0].lower()
+        if action in ("reset", "rebuild"):
+            value = self.agent.rebuild_original_request()
+            if value:
+                self.ui.line("Original request anchor rebuilt:")
+                self.ui.line(value)
+            else:
+                self.ui.line(
+                    "Could not rebuild the anchor; use /anchor set TEXT.")
+            return
+        if action == "set":
+            text = " ".join(args[1:]).strip()
+            if not text:
+                raise ValueError("Usage: /anchor set TEXT")
+            self.ui.line("Original request anchor set:")
+            self.ui.line(self.agent.set_original_request(text))
+            return
+        raise ValueError("Usage: /anchor [reset|set TEXT]")
+
     def show_summary(self):
         if not self.agent.summary:
             self.ui.line("No conversation summary.")
-            return
-        self.ui.line("--- conversation summary (%s chars) ---" % len(self.agent.summary))
-        self.ui.line(self.agent.summary)
-        self.ui.line("--- end summary ---")
+        else:
+            self.ui.line("--- conversation summary (%s chars) ---" % len(self.agent.summary))
+            self.ui.line(self.agent.summary)
+            self.ui.line("--- end summary ---")
+        if self.agent.original_request:
+            self.ui.line("--- original request (session anchor) ---")
+            self.ui.line(self.agent.original_request)
+            self.ui.line("--- end original request ---")
 
     def show_notice(self, text):
         sink = self.ui.sink()
