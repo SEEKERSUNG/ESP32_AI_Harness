@@ -37,7 +37,7 @@
 - 关闭验证会暴露 API Key、对话和代码给中间人；
 - API Key、Wi-Fi 密码和 MCP Header 值不会由 `/status`、`/api/status`、`/api/config` 或 `/api/mcp` 输出，也不进入 Git；
 - 设备上的 `/secrets.json` 和 `/mcp.json` 是明文文件，串口或物理访问可读取；`/mcp.json` 可能包含 GitHub PAT、MCP Token 等；
-- `/state/conversation.json` 保存已提交对话、摘要和消息类型标记，可能包含用户粘贴的敏感文本；`/state/background.json` 在后台结果继续前短暂保存有界执行输出。两者默认开启，可在网页设置关闭持久化，`/clear` 删除；
+- `/state/conversation.json` 保存已提交对话、摘要和消息类型标记，可能包含用户粘贴的敏感文本；`/state/background.json` 在后台结果继续前短暂保存有界执行输出。两者默认开启，可在“设置 → Harness 行为”关闭持久化，`/clear` 删除；
 - 用户粘贴到自然语言或 `/history` 的秘密不会被自动脱敏；
 - `show_thinking` 默认 `true`，reasoning 文本会输出到串口，其中可能包含用户信息或中间推理，注意串口日志的保存和分享；可用 `/thinking show off` 关闭；
 - thinking 级别越高，请求延迟和费用越高；流式响应头等待取 `stream_header_timeout`（默认 300 秒）与 thinking 预算的较大值；首段正文前另有 `stream_first_token_timeout`（默认 600 秒），正文开始后按字节空闲 `stream_idle_timeout`（默认 300 秒）和事件空闲 `stream_event_idle_timeout`（默认 300 秒）控制，持续 token 会刷新计时，但长请求期间串口和网页仍可能长时间等待；超时重试保持用户当前 thinking 等级，不会为了尽快成功而降级，因此仍可能多次以高等级重试并产生费用；已经输出正文后的超时不会自动重试。重试耗尽、工具/回合上限或用户取消导致回合停止时，Harness 会把本轮已有的用户消息、工具结果和一条“本轮未完成”说明写入持久对话；这些内容可能包含敏感信息。空正文、截断、超时和首字/最大间隔会作为模型结果元数据打印。
@@ -58,6 +58,7 @@
 - `/undo` 和网页回退只删除对话上下文，不回滚已经执行的 GPIO、文件、网络或其他设备副作用；它还会清除待执行代码、Skill 提案、待回答问题和最近执行结果。后台任务运行期间不能回退。
 - 网页 `/api/command` 接受配置、Memory/Skill/Workspace 写入、MCP、后台控制、`/http`、`/run`、`/run bg`、`/workspace run` 和 `/continue` 等命令；风险操作在浏览器确认后以 `confirm:true` 重试，生成/工作区代码仍通过主线程 handoff 执行。需要第二行输入或重启设备的 `/setup`、`/wifi`、`/model`、`/ca`、`/factory-reset`、`/web reset-password` 使用专用网页表单/按钮（`/repl` 仅串口；`/memory replace` 可用 `=>` 单行形式）。回退可通过 `/undo`/`/rewind` 或专用 `POST /api/rewind`。
 - Web CA 上传只接受包含 PEM 标记、路径为绝对 `.pem` 且不含 `..` 的内容，上限 64 KB。全量 Mozilla bundle 建议通过部署或串口安装。
+- 网页文件管理器可以列出整个 VFS，但写入、上传、重命名和删除只允许 `/workspace` 下的路径；`/workspace` 与 `/workspace/tmp` 只能管理内容，不能删除/重命名目录本身。固件、启动文件、`/harness`、`/skills`、`/state` 等系统文件只读。`/secrets.json` 和 `/mcp.json` 不出现在可读/下载接口，界面标记“敏感”。路径校验拒绝 `..`、反斜杠和控制字符，并按大小写不敏感方式拦截敏感文件名。上传只接受 UTF-8 文本并受 `workspace_file_limit` 和工作区总量限制；下载上限 256 KB。文件页沿用网页管理员会话，不是额外的权限边界。
 - Web 线程只处理 HTTP 和模型请求，不直接执行前台生成代码、不调用 `os.dupterm`、不复位设备、不直接喂看门狗；前台生成代码和工作区脚本通过主线程 handoff 执行。后台 worker 线程只运行经过相同确认规则的任务，使用线程级输出隔离，也不调用 `os.dupterm`/`machine.reset`/喂狗。执行器的协作式钩子只在主线程调用 `feed_execution()`；后台 worker 的喂狗调用是空操作。因此网页触发的可协作长前台程序可以安全超过 30 秒；不经过钩子的前台阻塞（如单次 C/SPI 调用或超长非 `range` 的 `for` 循环）仍会停止喂狗并复位，而后台任务完全阻塞时主线程仍喂狗，该任务通常只能靠重启恢复。共享执行运行时必须在最后一个执行结束/线程结束后恢复 `builtins.print`、`builtins.__harness_check` 和 `time` 模块。
 - 单 Web 线程意味着长对话期间其他网页请求排队；这不是并发隔离，不能用来承载多用户或公网访问。请求头和正文读取有 `web_request_timeout_s` 总超时，但长模型回合期间网络维护仍会延后。
 - 网页“停止”按钮对本页持有的流通过关闭请求取消；对串口、AUTO 自动继续或定时任务则调用 `POST /api/stop`，设置主线程协作取消标志，在下一个网络检查点抛出 `LLMStreamCancelled`，主线程执行器也会在 `__harness_check()`、插桩后的 `range`、所有 `while` 条件或 `time.sleep()` 检查点返回 `cancelled`。阻塞在 C/SPI 调用中的代码仍无法被强制终止，代码副作用不会因点击停止而撤销。

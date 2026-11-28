@@ -41,7 +41,7 @@ URL:  http://192.168.4.1/
 
 `/run`、`/run bg`、`/workspace run` 和 `/continue` 也可从网页对话输入框以 `/` 开头执行；生成/工作区代码通过主线程 handoff 运行，执行前浏览器会请求确认。以下命令仍需要第二次输入或重启设备，使用对应的专用表单/按钮（`/repl` 仅限串口）：
 
-- `/setup`、`/wifi`、`/model`、`/ca`、`/web reset-password`：使用设置页表单；
+- `/setup`、`/wifi`、`/model`、`/ca`、`/web reset-password`：使用侧边栏“设置”中的网络/模型/安全表单；
 - `/factory-reset`：使用网页恢复出厂设置表单，需要管理密码和 `confirm:true`。
 
 网页或单行场景使用 `/memory replace <match> => <replacement>`；只写 `/memory replace <match>` 时串口仍会提示第二行输入。
@@ -61,7 +61,7 @@ URL:  http://192.168.4.1/
 | `/undo [N]` / `/rewind [N]` | 删除第 N 条最近用户消息及其后的全部回复（默认 N=1） |
 | `/clear` | 清除历史、摘要、待执行代码、最近执行状态和持久化文件 |
 
-默认 `persist_conversation=true`，已提交的历史、摘要和首个用户请求锚点会原子写入 `/state/conversation.json`，设备复位/重启后自动恢复；`/clear` 删除该文件，恢复出厂设置也会删除。网页“行为”设置可关闭持久化。对话可能包含用户粘贴的敏感文本，文件位于设备明文文件系统。上下文预算按近似 token 计算：ASCII 约 4 字符/token，非 ASCII 约 1 字符/token；默认 `context_tokens=200000`。达到消息数、字符数或 token 限制时，最旧消息会先被移除，但当前任务、源码和执行观察会被保留。单次任务超过 `input_limit`（默认 2000 字符）会被拒绝。
+默认 `persist_conversation=true`，已提交的历史、摘要和首个用户请求锚点会原子写入 `/state/conversation.json`，设备复位/重启后自动恢复；`/clear` 删除该文件，恢复出厂设置也会删除。“设置 → Harness 行为”可关闭持久化。对话可能包含用户粘贴的敏感文本，文件位于设备明文文件系统。上下文预算按近似 token 计算：ASCII 约 4 字符/token，非 ASCII 约 1 字符/token；默认 `context_tokens=200000`。达到消息数、字符数或 token 限制时，最旧消息会先被移除，但当前任务、源码和执行观察会被保留。单次任务超过 `input_limit`（默认 2000 字符）会被拒绝。
 
 `/undo` 只回退对话上下文，不恢复工作区文件、Skill、Memory 或执行造成的设备状态；它会同时清除待执行代码、Skill 提案、待回答问题和最近执行结果。网页不再提供顶栏回退按钮；每条真实用户消息旁显示“回退到这里”，实时消息在正常完成或手动停止后设备回合结束时补上按钮，刷新历史后同样显示。压缩摘要不会被重建；历史索引以当前 `agent.history` 为准。
 
@@ -213,7 +213,7 @@ Harness 不再支持模型自定义可执行 Tool。模型通过原生 function 
 
 ### 后台执行
 
-短程序应优先在前台执行；只有长时间运行、需要与用户继续交互并行，或用户明确要求时才使用后台，并应说明原因。`background_execution=true`（默认）时，网页 AUTO 运行和手动“后台运行”会创建后台任务；每个任务在自己的 worker 线程执行。`__workspace action=run` 支持 `background=true`，串口可用 `/workspace run bg <path>` 直接把工作区脚本放入后台。`/api/chat` 或 `/api/run` 的 NDJSON 流在任务入队后结束，浏览器通过 `/api/status.backgrounds` 轮询所有任务。AUTO 模式（`auto_run=true`）且 `auto_feedback=true` 时，设备主线程在 `esp32>` 空闲时会自动把已完成结果写入上下文并继续模型对话；网页只显示状态，不再要求手动选择“继续/丢弃”，即使浏览器标签页关闭或隐藏也能继续。自动继续期间网页轮询 `GET /api/live` 增量显示回复，完成后以 `/api/history` 为准。AUTO 关闭或 `auto_feedback=false` 时保留手动“继续/丢弃”按钮和串口 `/continue`。最多同时运行 `background_max_jobs` 个（默认 4，可在网页设置中改为 1–4），超出的任务保持 `queued`，槽位空出后自动启动。结果观察会带上原任务摘要，并提示“其他后台任务可能仍在运行、后续用户消息可能无关”，避免把另外插入的问题混进原任务。任务记录保存在 `/state/background.json`（受 `persist_conversation` 控制，默认最多 8 条）；设备重启后已完成结果可恢复，未完成记录显示为 `error` 且不会自动重跑。降低 `background_max_records` 只会裁剪失败/非 ready 记录，不会静默丢弃可继续的 ready 结果。
+短程序应优先在前台执行；只有长时间运行、需要与用户继续交互并行，或用户明确要求时才使用后台，并应说明原因。`background_execution=true`（默认）时，网页 AUTO 运行和手动“后台运行”会创建后台任务；每个任务在自己的 worker 线程执行。`__workspace action=run` 支持 `background=true`，串口可用 `/workspace run bg <path>` 直接把工作区脚本放入后台。`/api/chat` 或 `/api/run` 的 NDJSON 流在任务入队后结束，浏览器通过 `/api/status.backgrounds` 轮询所有任务。AUTO 模式（`auto_run=true`）且 `auto_feedback=true` 时，设备主线程在 `esp32>` 空闲时会自动把已完成结果写入上下文并继续模型对话；网页只显示状态，不再要求手动选择“继续/丢弃”，即使浏览器标签页关闭或隐藏也能继续。自动继续期间网页轮询 `GET /api/live` 增量显示回复，完成后以 `/api/history` 为准。AUTO 关闭或 `auto_feedback=false` 时保留手动“继续/丢弃”按钮和串口 `/continue`。最多同时运行 `background_max_jobs` 个（默认 4，可在“设置 → Harness 行为”改为 1–4），超出的任务保持 `queued`，槽位空出后自动启动。结果观察会带上原任务摘要，并提示“其他后台任务可能仍在运行、后续用户消息可能无关”，避免把另外插入的问题混进原任务。任务记录保存在 `/state/background.json`（受 `persist_conversation` 控制，默认最多 8 条）；设备重启后已完成结果可恢复，未完成记录显示为 `error` 且不会自动重跑。降低 `background_max_records` 只会裁剪失败/非 ready 记录，不会静默丢弃可继续的 ready 结果。
 
 后台运行期间**仍可发送新对话、前台运行代码或再创建后台任务**。AUTO 开启时，新生成的代码会创建新的后台任务；槽位满则排队。手动待执行卡片提供“前台运行”和“后台运行”两个按钮；前台运行回到串口主线程，与后台任务并行。`__workspace run` 也回到主线程，可以运行。配置写入、回退、`/clear`、`/repl`、恢复出厂设置等维护操作在任务运行期间仍被拒绝。AUTO 模式下新的对话结束后，如果某个后台结果已就绪，设备主线程会按 `auto_feedback` 自动继续该任务（手动模式由网页轮询继续）；若存在待执行代码、Skill 提案或问题，则先等待处理，之后再自动继续。`/api/status` 的 `turn_busy` 只表示模型回合锁，`busy` 还包含后台任务。
 
@@ -286,10 +286,10 @@ AI 工具示例：
 /auto turns 32        # 设置自动反馈最大轮数（1-50，默认 32）
 ```
 
-- `auto_run`：模型返回 python 代码块后立即本地执行并自动反馈；连续修复受 `max_turns` 限制（默认 32，可用 `/auto turns N` 或网页设置调整）。明显包含 `while True`/`while 1` 的代码会被阻止自动执行，需要人工 `/run`。
+- `auto_run`：模型返回 python 代码块后立即本地执行并自动反馈；连续修复受 `max_turns` 限制（默认 32，可用 `/auto turns N` 或“设置 → Harness 行为”调整）。明显包含 `while True`/`while 1` 的代码会被阻止自动执行，需要人工 `/run`。
 - Skill 保存仍然需要确认。
 - 复位恢复的待审代码不会在启动时自动运行。
-- 自动模式绕过逐次确认，适合可信的本地开发会话。网页对话框旁的 AUTO 控制 `auto_run`，开启需要确认；`auto_feedback` 和 `background_execution` 仍在网页设置页单独配置。
+- 自动模式绕过逐次确认，适合可信的本地开发会话。网页对话框旁的 AUTO 控制 `auto_run`，开启需要确认；`auto_feedback`、`background_execution` 和 `max_tool_calls` 在“设置 → Harness 行为”单独配置。
 - 后台执行与自动模式相互独立：它只改变执行等待方式，不改变确认/权限规则；AUTO 关闭时手动“前台运行/后台运行”仍可选择。AUTO 开启且 `auto_feedback=true` 时，新代码会创建后台任务，完成后由设备主线程自动继续，不需要网页或用户点击“继续/丢弃”。
 
 ## 硬件访问

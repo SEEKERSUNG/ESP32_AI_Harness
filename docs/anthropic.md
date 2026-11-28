@@ -92,4 +92,4 @@ Model [claude-opus-5-5]: claude-opus-5-5
 API key (empty=keep, '-'=clear): sk-ant-...
 ```
 
-网页设置页选择“Anthropic Messages”，Base URL 填 `https://api.anthropic.com`，Model 填例如 `claude-opus-5-5`。保存后 `/test api` 会发送一个最小请求验证鉴权、TLS 和协议。
+网页侧边栏“设置 → 模型”选择“Anthropic Messages”，Base URL 填 `https://api.anthropic.com`，Model 填例如 `claude-opus-5-5`。保存后 `/test api` 会发送一个最小请求验证鉴权、TLS 和协议。

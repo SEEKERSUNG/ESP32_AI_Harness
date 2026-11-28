@@ -68,6 +68,8 @@ Use `device.info()` first.
 
 Skill 没有版本回滚；更新直接覆盖 `SKILL.md`。技能目录中的其他文件可以手工作为补充资料，当前 `__skill read` 只加载 `SKILL.md`。
 
+网页侧边栏“Skill”页列出已保存的 Skill，可展开查看完整 `SKILL.md`；对话中的提案仍显示为独立气泡，保存或丢弃需要用户点击。网页 Skill 页当前只读，删除仍使用 `/skill-delete`。
+
 ## 与生成代码的区别
 
 | | Skill | 一次性生成代码 |

@@ -49,18 +49,18 @@ AP 是 WPA2。首次设置只接受来自 AP 网段的客户端（可用 `web_se
 
 ## 网页能力
 
-- 视觉：响应式布局，跟随系统浅色/深色主题；使用本地 CSS 变量、无外部字体/CDN/图片，符合严格 CSP；输入框 16px、触控目标不小于 44px。
+- 视觉：响应式布局，跟随系统浅色/深色主题；使用本地 CSS 变量、无外部字体/CDN/图片，符合严格 CSP；输入框 16px。输入区采用紧凑布局，Thinking/AUTO/发送按钮约 36–38px 高，其余主要按钮和导航目标不小于 44px。
 - 侧边栏：桌面端固定左侧，可用顶部按钮或侧栏按钮收起，收起状态记在浏览器 `localStorage`；窄屏（≤900px）默认收起为抽屉，用汉堡按钮打开，选择栏目后自动关闭，背景遮罩可点击关闭。侧边栏包含状态、对话、任务（后台任务/自动化任务）、Skill、文件和设置（网络/模型/MCP/网页搜索/Harness 行为/安全/恢复出厂设置）。
 - 对话：不再把所有内容包进一个大的 turn 卡片。同一回合按事件类型拆成独立、紧凑的气泡：每个模型请求的 thinking 一个可折叠气泡，每次工具调用和工具结果各自一个气泡，代码围栏一个代码气泡，正文按文本段一个气泡；执行结果、问题卡、Skill 提案和代码确认卡也各自是独立气泡。reasoning 随 assistant 消息持久化（每条最多 4096 字符），刷新页面后仍显示；实时流式和刷新后的历史使用同一套气泡结构。后台任务结果和定时任务续答属于新的 Agent 消息，会在新的 turn 中显示（后台结果折叠为“后台任务结果”，定时任务显示为一条用户请求），不会与上一条回复合并。工具/执行记录默认折叠，运行、丢弃和保存按钮保持在折叠区外；流式更新会保留已展开区块的状态。
 - 停止：流式期间显示“停止”按钮。点击后浏览器停止接收响应，设备端在下一批事件发送失败时中止当前模型请求；页面保持等待并轮询真实 busy 状态，回合结束后才恢复输入。若设备正在执行本页没有持有的回合（AUTO 自动继续、定时任务或串口回合），`/api/status.turn_busy` 为真时同样显示停止按钮，点击会调用 `POST /api/stop`，由主线程在下一个网络检查点或执行器检查点协作取消。浏览器自己 `/api/run` 流已经开始执行的代码不会被该按钮中断；设备自有回合在主线程上协作运行的生成代码会在 `__harness_check()`、插桩后的 `range`、所有 `while` 条件或 `time.sleep()` 处返回 `cancelled`。阻塞在 C/SPI 调用中的代码仍可能继续产生副作用，直到执行结束或看门狗复位。`timeout=` 应写在开围栏同一行；闭合围栏后的独立 `timeout=` 行和代码块首个未再使用的独立 `timeout=N` 行也会被兼容识别，其他说明文字不会改变超时。部分未提交的模型回答不会写入历史。
 - 模型提问：模型调用 `__ask` 时显示问题卡（标题、问题、最多 8 个选项按钮和自定义输入）。点击选项或直接输入文本会作为下一条消息发送；问题事件不阻塞设备线程，刷新后可从 `/api/status` 的 `question` 字段恢复。已回答的问题不会再被延迟到达的旧状态插入到下一回合；只有新的 `question` 事件会重新显示卡片。系统提示词会区分 `auto_run` 模式，避免模型在自动执行时向用户索要执行输出。
-- 对话框控件：Thinking 下拉框只有关闭/Low/High/Max 四档（默认 High），选择后立即写入 `config.json`，重启/复位后保持；AUTO 控制 `auto_run`，开启需要确认，关闭不需要。请求期间控件禁用，保存失败恢复设备实际状态。
+- 对话框控件：Thinking 下拉框（位于输入框左侧，只有关闭/Low/High/Max 四档，默认 High），选择后立即写入 `config.json`，重启/复位后保持；AUTO 控制 `auto_run`，开启需要确认，关闭不需要。请求期间控件禁用，保存失败恢复设备实际状态。
 - 布局：侧边栏承载栏目导航，顶部栏显示当前栏目、连接状态、AUTO 标记和刷新按钮；对话框固定在内容区底部，Thinking/AUTO 位于输入框左侧，桌面和手机尽量保持单行紧凑布局，手机隐藏 Thinking 文字标签。页面按输入框实际高度更新聊天底部留白。切换栏目再回到对话时页面自动滚动到最新消息；新内容到达时仅在用户接近底部时跟随，避免打断向上翻阅历史。
 - 任务：后台任务不再作为聊天气泡插入对话，而是显示在“任务 → 后台任务”中，位置固定，不随新回复漂移；每个任务仍提供停止、继续、丢弃和输出抽屉。“任务 → 自动化任务”列出一次性/重复任务，支持新建、编辑、启停、立即运行和删除。提示词任务到点后在主线程执行一个 Agent 回合；代码任务到点后创建后台任务。页面通过 `/api/status.schedules` 刷新任务摘要，`schedule_seq` 变化后自动刷新历史。
 - 代码确认：默认显示“前台运行/后台运行/丢弃”；`auto_run=true` 时安全代码自动执行并自动反馈。
 - Skill：侧边栏“Skill”页列出已保存的 `SKILL.md`，可展开查看完整内容；对话中的 Skill 提案仍显示可保存/丢弃的独立气泡，Skill 永不自动保存。
 - 命令：非交互 `/` 命令直接在对话输入框执行，命令本身显示为命令气泡，输出显示为独立系统气泡；需要确认的命令会弹出确认框，交互式命令会提示使用对应表单或串口。
-- 设置：侧边栏按网络、模型、MCP、网页搜索、Harness 行为、安全、恢复出厂设置分区显示。包含 Wi-Fi、API 协议（OpenAI 兼容/Anthropic）、Base URL、Model、API Key、TLS 验证、CA 路径、CA PEM、MCP 服务器 JSON、网页搜索（启用、provider auto/bing、实际生效提供方）、公共 HTTP 抓取（`__http` 启用、明文 HTTP 开关）、NTP 服务器、显示时区偏移、自动校时间隔、管理密码、AP 密码、思考文本显示、自动反馈、后台执行、单回合工具调用上限（`max_tool_calls`，1–64）、对话持久化和恢复出厂设置。Thinking 强度和 AUTO 在对话框旁直接操作。
+- 设置：侧边栏按网络、模型、MCP、网页搜索、Harness 行为、安全、恢复出厂设置分区显示。包含 Wi-Fi、API 协议（OpenAI 兼容/Anthropic）、Base URL、Model、API Key、TLS 验证、CA 路径、CA PEM、MCP 服务器 JSON、网页搜索（启用、provider auto/bing、实际生效提供方）、公共 HTTP 抓取（`__http` 启用、明文 HTTP 开关）、NTP 服务器、显示时区偏移、自动校时间隔、管理密码、AP 密码、思考文本显示、自动反馈、后台执行、单回合工具调用上限（`max_tool_calls`，1–64）、对话持久化和恢复出厂设置。Thinking 强度和 AUTO 在输入框左侧直接操作。
 - 状态页：显示网络模式/IP/Wi-Fi/可用堆/模型/会话/版本、上下文消息数/字符数/估算 tokens/占用百分比/压缩摘要字符数、当前设备回合和后台任务数；提供“清空对话”“压缩上下文”“刷新历史”按钮。清空会删除全部历史；压缩会调用模型生成摘要，可能耗时并产生一次模型请求。
 - 文件：侧边栏“文件”页浏览整个 MicroPython VFS，支持进入目录、下载、查看/编辑、上传 UTF-8 文本文件、新建文件夹/文本文件、重命名和删除。`/workspace` 下的文件可写；固件、启动文件、`/harness`、`/skills`、`/state` 和其他系统文件只读，界面标记“系统”；`/secrets.json` 和 `/mcp.json` 标记“敏感”，网页不读取也不下载。`/workspace` 和 `/workspace/tmp` 目录本身不能删除或重命名，但可以管理其中的内容。文件列表最多显示 200 项，单文件编辑/上传受 `workspace_file_limit` 和总工作区限制约束；上传仅支持 UTF-8 文本，不支持二进制。下载是认证后的原始附件响应，单文件最大 256 KB。
 - 恢复出厂设置：需勾选确认并再次输入当前管理密码；删除 `config.json`、`secrets.json`、`mcp.json`、`MEMORY.md`、待恢复代码、Skill、旧版 Tool 目录、工作区、`/state` 持久对话和 RAM 中的对话状态后重启。固件、启动文件和公共 CA 保留；Wi-Fi 配置清除后会回到设备 AP 首次设置流程。
@@ -78,9 +78,9 @@ AP 是 WPA2。首次设置只接受来自 AP 网段的客户端（可用 `web_se
 
 - `auto_run=false`（默认）：显示代码，用户点击“运行”后才执行。
 - `auto_run=true`：模型返回的安全代码自动执行；明显包含 `while True`/`while 1` 的代码仍会被阻止，需要手动运行。
-- `auto_feedback=true`（默认）：执行结果自动反馈给模型，受 `max_turns` 限制；设置页可调整最大轮数（默认 32，范围 1–50）。
-- 开启自动模式需要浏览器确认和 `/api/auto` 的 `confirm:true`；页面显示红色 AUTO 标记。聊天区 AUTO 控制 `auto_run`；`auto_feedback` 和 `background_execution` 保留在设置页，不会被该开关意外重置。
-- `background_execution=true`（默认）：AUTO 或手动“后台运行”创建后台任务，每个任务在自己的 worker 线程执行；`/api/chat`/`/api/run` 的流立即结束。浏览器轮询 `/api/status.backgrounds`，按任务显示编号、备注、状态、耗时和输出。AUTO 模式且 `auto_feedback=true` 时，设备主线程在 `esp32>` 空闲时自动提交已完成结果并继续模型对话，网页不显示“继续/丢弃”选项；浏览器标签页关闭或隐藏也不影响。打开的网页会在自动继续期间轮询 `GET /api/live`，把 `content`/`reasoning` 增量追加到聊天气泡，因此回复像普通流式回合一样逐步出现；设备只保留一段有界快照（默认上限 `web_output_limit`），完成后网页刷新 `/api/history` 并以持久历史为准。自动继续不会为 Skill 提案或需要确认的 MCP 工具弹出阻塞式串口确认：Skill 提案保持待处理，非 `auto` 服务器的 MCP 工具调用被拒绝。被用户取消/停止的任务不会被自动重启；模型应报告停止结果，只有用户再次要求时才重新启动。手动模式（AUTO 关闭）仍由网页或 `/api/continue {"id":N}` 继续。最多同时运行 `background_max_jobs` 个（默认 4，设置页可改 1–4），多余任务显示“排队中”。执行期间可以继续发送新网页对话、手动前台运行另一段代码，或再创建后台任务；新的待执行卡片有“前台运行/后台运行”两个按钮。配置、回退、`/clear`、`/repl`、恢复出厂设置等维护操作仍返回 409。可以用每个任务的停止按钮或 AI 的 `__background stop` 请求停止；`timeout=0`/`infinite` 可让后台任务无截止时间运行，但停止仍依赖协作检查点。后台输出通过 `print()` 捕获，直接写 `sys.stdout` 可能丢失。结果观察会标注原任务和其他仍在运行的任务；若其间存在待执行代码、Skill 或问题，自动继续会等待这些项处理完毕。串口可用 `/run bg`、`/background`、`/continue [id]` 手动进入同一流程。
+- `auto_feedback=true`（默认）：执行结果自动反馈给模型，受 `max_turns` 限制；“设置 → Harness 行为”可调整最大轮数（默认 32，范围 1–50）和单回合工具调用上限（默认 16，范围 1–64）。
+- 开启自动模式需要浏览器确认和 `/api/auto` 的 `confirm:true`；页面显示红色 AUTO 标记。聊天区 AUTO 控制 `auto_run`；`auto_feedback`、`background_execution` 和 `max_tool_calls` 保留在“设置 → Harness 行为”，不会被该开关意外重置。
+- `background_execution=true`（默认）：AUTO 或手动“后台运行”创建后台任务，每个任务在自己的 worker 线程执行；`/api/chat`/`/api/run` 的流立即结束。浏览器轮询 `/api/status.backgrounds`，按任务显示编号、备注、状态、耗时和输出。AUTO 模式且 `auto_feedback=true` 时，设备主线程在 `esp32>` 空闲时自动提交已完成结果并继续模型对话，网页不显示“继续/丢弃”选项；浏览器标签页关闭或隐藏也不影响。打开的网页会在自动继续期间轮询 `GET /api/live`，把 `content`/`reasoning` 增量追加到聊天气泡，因此回复像普通流式回合一样逐步出现；设备只保留一段有界快照（默认上限 `web_output_limit`），完成后网页刷新 `/api/history` 并以持久历史为准。自动继续不会为 Skill 提案或需要确认的 MCP 工具弹出阻塞式串口确认：Skill 提案保持待处理，非 `auto` 服务器的 MCP 工具调用被拒绝。被用户取消/停止的任务不会被自动重启；模型应报告停止结果，只有用户再次要求时才重新启动。手动模式（AUTO 关闭）仍由网页或 `/api/continue {"id":N}` 继续。最多同时运行 `background_max_jobs` 个（默认 4，“设置 → Harness 行为”可改 1–4），多余任务显示“排队中”。执行期间可以继续发送新网页对话、手动前台运行另一段代码，或再创建后台任务；新的待执行卡片有“前台运行/后台运行”两个按钮。配置、回退、`/clear`、`/repl`、恢复出厂设置等维护操作仍返回 409。可以用每个任务的停止按钮或 AI 的 `__background stop` 请求停止；`timeout=0`/`infinite` 可让后台任务无截止时间运行，但停止仍依赖协作检查点。后台输出通过 `print()` 捕获，直接写 `sys.stdout` 可能丢失。结果观察会标注原任务和其他仍在运行的任务；若其间存在待执行代码、Skill 或问题，自动继续会等待这些项处理完毕。串口可用 `/run bg`、`/background`、`/continue [id]` 手动进入同一流程。
 
 自动执行会产生多次计费模型请求，并让代码拥有完整 MicroPython 权限。仅在可信会话中使用。
 
@@ -232,9 +232,9 @@ question, response, code, background, execution, skill, feedback, done, error
 
 搜索配置也可通过 `/api/config` 读取/更新：`search_enabled`、`search_provider`（仅 `auto`/`bing`）、`search_bing_url`；结果/超时等上限可通过 `config.json` 调整。`/api/config` 还返回只读的 `search_provider_effective` 和 `search_provider_fallback`，用于显示 `auto` 当前解析到的提供方。`auto` 跟随模型 API：Anthropic 使用内置 web_search，OpenAI 官方端点使用 Responses web_search，DeepSeek 直连端点使用 `deepseek_web_search` 服务端搜索，OpenCode Go 和其他兼容端点使用 Bing 免 Key 搜索；原生搜索失败时回退 Bing，显式 `bing` 不回退。独立的 DeepSeek Search API、`search_url` 和 `search_api_key` 已移除。
 
-公共 HTTP 抓取配置：`http_tool_enabled`、`http_tool_allow_http`（默认 `false`）、`http_tool_timeout`、`http_tool_response_limit`、`http_tool_output_limit`、`http_tool_download_limit`、`http_tool_max_redirects`、`http_tool_allowed_ports`。网页设置提供启用和明文 HTTP 开关；其余通过 `/api/config` 或 `config.json` 调整。
+公共 HTTP 抓取配置：`http_tool_enabled`、`http_tool_allow_http`（默认 `false`）、`http_tool_timeout`、`http_tool_response_limit`、`http_tool_output_limit`、`http_tool_download_limit`、`http_tool_max_redirects`、`http_tool_allowed_ports`。“设置 → 网页搜索”提供启用和明文 HTTP 开关；其余通过 `/api/config` 或 `config.json` 调整。
 
-时间设置可通过 `/api/config` 或网页“行为”卡片读取/更新：`ntp_server`、`ntp_sync_interval_s`（0–86400 秒）、`timezone_offset_minutes`（-720–840）。NTP 把 RTC 写成 UTC；`__time` 只把显示结果转换为配置偏移，默认北京时间。RTC 时间不会写回本地时区。
+时间设置可通过 `/api/config` 或“设置 → Harness 行为”读取/更新：`ntp_server`、`ntp_sync_interval_s`（0–86400 秒）、`timezone_offset_minutes`（-720–840）。NTP 把 RTC 写成 UTC；`__time` 只把显示结果转换为配置偏移，默认北京时间。RTC 时间不会写回本地时区。
 
 模型请求相关超时也可通过 `/api/config` 读取/更新：`stream_header_timeout`（默认 300 秒）、`stream_idle_timeout`（默认 300 秒）、`stream_event_idle_timeout`（默认 300 秒）、`stream_first_token_timeout`（默认 600 秒）、`request_timeout`、`api_retries`、`api_retry_base_ms`、`api_retry_max_ms`、`api_retry_after_max_ms`、`api_retry_jitter_pct`。`model` 事件额外返回 `headers_ms`、`first_token_ms`、`token_count`、`max_gap_ms`、`tail_gap_ms` 以及三类超时预算，便于区分网关排队和模型输出慢；`tail_gap_ms` 是最后一次真实 token 到流结束/超时的间隔。
 
@@ -256,7 +256,7 @@ question, response, code, background, execution, skill, feedback, done, error
 |---|---|
 | 浏览器打不开 | `/web` 查看服务器状态和 URL；确认手机/电脑与 ESP32 同网段；检查 `web_enabled` 和端口 |
 | 忘记管理密码 | 串口执行 `/web reset-password`，连接 AP 后重新设置 |
-| 设置页提示“Connect to the setup AP first” | 首次设置必须连接设备 AP |
+| 首次设置页提示“Connect to the setup AP first” | 首次设置必须连接设备 AP |
 | 修改 Wi-Fi 后页面断线 | 原 STA 已断开；设备首次保存后需约 2–5 秒完成扫描/关联，AP 信道也可能随 STA 切换。浏览器短暂断线不等于连接失败，连接 AP 或新 IP 后重新登录，并以串口 `/status` 的 `Wi-Fi:` 行为准 |
 | AP 模式下第一次改 Wi-Fi 失败，第二次或复位后才成功 | 旧固件把 ESP-IDF 扫描期间沿用的 `STAT_NO_AP_FOUND`（201）误判为最终失败；当前固件会等待约 5 秒稳定窗口，升级后首次在线切换应直接成功 |
 | Wi-Fi error: AP not found | ESP32-S3 只支持 2.4 GHz；确认选择的是 2.4G SSID、名称拼写和信号范围。保存后的前 5 秒仍可能在扫描，看到旧错误时请等待连接结果，不要立即重复提交 |
@@ -269,8 +269,8 @@ question, response, code, background, execution, skill, feedback, done, error
 | 网页对话一直忙 | 串口任务/另一次网页回合占用锁；串口只读命令可用。若刚点击“停止”，页面会等待设备真实回合结束，已开始的代码不能被强制取消 |
 | 后台卡片长时间停在 running | 代码仍在该任务的 worker 线程执行；`elapsed` 和 `timeout_s` 可见，`/background status ID` 可看输出尾部。协作式钩子会在截止时间停止；阻塞在 C/SPI 中或不调用钩子的后台任务无法协作停止，通常只能重启。期间对话、前台运行和状态轮询仍可用；回退和配置写入返回 409 |
 | 后台完成后没有自动继续 | AUTO 模式由设备主线程自动继续，不需要网页保持打开；检查 `auto_feedback` 是否关闭、`max_turns` 是否耗尽、模型/网络是否就绪。手动模式（AUTO 关闭）才会显示“继续 #N”和“丢弃结果”按钮，也可串口 `/continue [id]`。存在待执行代码、Skill 或问题时自动继续会等待。设备重启后可恢复 `/state/background.json` 中已完成的结果，未完成记录显示为 error |
-| 定时任务到点没有执行 | 先看“任务”页的“下次/上次”和 `last_error`：RTC 年份必须有效（NTP 已同步），任务必须启用，且设备当时不在模型回合、没有待执行代码/Skill/问题；设备离线或复位期间过期的任务会在下次空闲时补跑一次。代码任务只负责启动后台任务，执行失败会显示在后台结果里。连续失败 3 次后会停用一次性任务或回到下一个正常周期 |
-| 后台任务显示 queued 很久 | 同时运行数达到 `background_max_jobs`（默认 4）；等某个任务完成或停止/丢弃一个排队任务。可在设置页把并发数调到 1–4 |
+| 定时任务到点没有执行 | 先看“任务 → 自动化任务”的“下次/上次”和 `last_error`：RTC 年份必须有效（NTP 已同步），任务必须启用，且设备当时不在模型回合、没有待执行代码/Skill/问题；设备离线或复位期间过期的任务会在下次空闲时补跑一次。代码任务只负责启动后台任务，执行失败会显示在后台结果里。连续失败 3 次后会停用一次性任务或回到下一个正常周期 |
+| 后台任务显示 queued 很久 | 同时运行数达到 `background_max_jobs`（默认 4）；等某个任务完成或停止/丢弃一个排队任务。可在“设置 → Harness 行为”把并发数调到 1–4 |
 | 启动后台报 `can't create thread` | ESP-IDF 内部堆不足以创建 worker 栈。Harness 会在启动前关闭空闲 HTTPS 连接、GC，并依次尝试 32/24/16/12/8 KB 栈；仍失败时降低 `background_thread_stack_kb`（例如 16）或 `background_max_jobs`，减少同时任务后重试，必要时重启设备释放内部 RAM |
 | 停止后台程序后输出不完整 | 停止是协作式的，阻塞 C/SPI 调用不会立即返回；到检查点后结果标记 `cancelled`。后台输出由 `print()` 捕获，直接写 `sys.stdout` 的内容可能缺失 |
 | 回退按钮提示 409 | 后台任务仍在运行，或另一个网页/串口操作占用了回合锁；等待任务完成或先停止轮询的回合 |

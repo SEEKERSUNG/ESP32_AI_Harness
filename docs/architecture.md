@@ -46,7 +46,7 @@ ESP32-S3 的 PSRAM 使完整 Harness 环境下重新建立 TLS 连接不再受�
 
 同一个模块的 `BackgroundStore` 用 `jobs` 数组在 `/state/background.json` 保存多个有界后台记录（默认最多 8 条，结果输出最多 4096 字符/条）；重启时仍处于 `queued`/`running` 的记录会恢复为可见的 `error`（`Interrupted by a device restart...`），绝不自动重跑。每次后台 job 使用跨重启不重复的 `id@ticks` token，`Agent.record_execution_result(..., job_id=token)` 会写入 `(job=<token>)` 标记。`BackgroundPool.take()` 在仍持有 job 记录时通过回调提交结果，提交成功后移除并落盘；去重只在启动恢复时使用 token，避免 job id 重启复用导致跳过记录和 `last_result` 为空。
 
-启动时 `Application.run()` 在 Agent 创建后加载文件并调用 `Agent.restore_conversation()`；文件损坏或超过 `conversation_max_chars`/`conversation_max_messages` 时按最新消息裁剪，损坏文件不会阻止启动。`/clear` 删除两个文件；恢复出厂设置删除 `/state`。网页“行为”设置可关闭 `persist_conversation`（同时关闭后台结果落盘）。
+启动时 `Application.run()` 在 Agent 创建后加载文件并调用 `Agent.restore_conversation()`；文件损坏或超过 `conversation_max_chars`/`conversation_max_messages` 时按最新消息裁剪，损坏文件不会阻止启动。`/clear` 删除两个文件；恢复出厂设置删除 `/state`。“设置 → Harness 行为”可关闭 `persist_conversation`（同时关闭后台结果落盘）。
 
 ## Web 控制台线程模型
 
@@ -109,7 +109,7 @@ MCP 调用在模型回合线程执行（串口主线程或 Web 线程）；Web �
 
 ## 自动模式
 
-`auto_run` 默认关闭。开启后，模型返回的代码块会立即执行并进入自动反馈循环；Skill 保存仍需确认。自动反馈受 `max_turns` 限制（默认 32，可用 `/auto turns N` 或网页设置调整），明显无限循环的代码会被阻止自动执行。启动时恢复的待审代码不会自动执行。
+`auto_run` 默认关闭。开启后，模型返回的代码块会立即执行并进入自动反馈循环；Skill 保存仍需确认。自动反馈受 `max_turns` 限制（默认 32，可用 `/auto turns N` 或“设置 → Harness 行为”调整），明显无限循环的代码会被阻止自动执行。启动时恢复的待审代码不会自动执行。
 
 自动模式下，如果模型在解释文字中向用户提问，同时又返回 python 代码块，Harness 会把“提问 + 代码”当作协议错误回传模型，要求它改用 `__ask` 或只返回代码；该代码不会自动执行。系统提示词还要求示例、片段和伪代码使用 text 代码块而不是 python 代码块，因为所有 python fence 都会被视为可执行代码。这些规则是保守启发式，不能替代用户审查。
 
@@ -220,7 +220,7 @@ ESP32-S3 N16R8 约有 8.3 MB GC 空闲堆和 14 MB 文件系统。代码仍保�
 - MCP 受 `mcp_max_servers`、`mcp_tool_limit`、`mcp_prompt_chars`、`mcp_args_limit`、`mcp_output_limit`、`mcp_response_limit`、每服务器 `max_tools` 和 `mcp_refresh_budget_s` 限制；
 - 持久对话受 `conversation_max_chars` 和 `conversation_max_messages` 限制；
 - 后台任务受 `background_max_jobs`（默认 4，最多 4 个 worker）、`background_thread_stack_kb`（默认 32）和 `background_max_records`（默认 8 条，每条输出 4096 字符）限制；
-- 内置工具最多 `max_tool_calls`（默认 16）次连续调用；
+- 内置工具最多 `max_tool_calls`（默认 16，可在“设置 → Harness 行为”调整为 1–64）次连续调用；
 - `input_limit` 拒绝过大的单次任务；
 - 当前反馈轮至少保留任务、源码和观察结果；
 - `response_limit` 限制非流式网络正文，`stream_response_limit` 限制 SSE 总字节；

@@ -47,7 +47,7 @@
 
 **模型与工具**
 
-- **双 API 协议与原生工具调用**：设置页、`/setup` 和 `/model` 可选择 OpenAI 兼容（`chat/completions`）或 Anthropic Messages（`/v1/messages`）。内置工具优先通过原生 function calling 发送（OpenAI `tools` / Anthropic `input_schema`），端点拒绝原生工具时自动回退到文本 `tool` 块。
+- **双 API 协议与原生工具调用**：侧边栏“设置 → 模型”、`/setup` 和 `/model` 可选择 OpenAI 兼容（`chat/completions`）或 Anthropic Messages（`/v1/messages`）。内置工具优先通过原生 function calling 发送（OpenAI `tools` / Anthropic `input_schema`），端点拒绝原生工具时自动回退到文本 `tool` 块。
 - **内置工具**：`__skill`、`__workspace`、`__memory`、`__search`、`__ask`、`__http`、`__background`、`__time`、`__schedule`；不再加载模型自定义可执行 Tool。
 - **Skills 与 Memory**：Skill 是 Markdown `SKILL.md` 指令包，永不执行；`MEMORY.md` 始终加载，支持读取、追加、删除和替换。
 - **公共网络抓取**：`__http` 支持 GET/HEAD 公共 HTTPS 页面、JSON API 和小文件下载；私有、回环、链路本地、CGNAT 和保留地址在连接前及每次重定向前都会被拒绝，校验后的 DNS 地址固定用于实际连接，跨源重定向不转发调用方 Header。
@@ -198,7 +198,7 @@ Model:    deepseek-v4.1-flash
 CA:       /ca.pem
 ```
 
-Anthropic Messages 示例（在 `/model` 中先把 API format 设为 `anthropic`，或在网页设置页选择）：
+Anthropic Messages 示例（在 `/model` 中先把 API format 设为 `anthropic`，或在侧边栏“设置 → 模型”选择）：
 
 ```text
 API format: anthropic
@@ -237,7 +237,7 @@ URL:  http://192.168.4.1/
 /web reset-password
 ```
 
-设置页末尾提供“恢复出厂设置”：需勾选确认并输入当前管理密码，删除配置、秘密、`MEMORY.md`、recovery 文件、Skill、旧版 Tool 目录、Workspace 和对话状态后重启；固件、启动文件和公共 CA 保留。串口等价命令是 `/factory-reset`，需要输入 `RESET` 二次确认。
+侧边栏“设置 → 恢复出厂设置”提供恢复出厂设置：需勾选确认并输入当前管理密码，删除配置、秘密、`MEMORY.md`、recovery 文件、Skill、旧版 Tool 目录、Workspace 和对话状态后重启；固件、启动文件和公共 CA 保留。串口等价命令是 `/factory-reset`，需要输入 `RESET` 二次确认。
 
 完整说明、API、NDJSON 事件、AP 状态机和安全边界见 [Web 控制台](docs/web.md)。
 
@@ -259,7 +259,7 @@ URL:  http://192.168.4.1/
 /continue 1 # 提交 1 号任务结果并继续对话
 ```
 
-执行结果按配置自动反馈给模型；后续修复代码仍需 `/run` 确认，自动反馈轮数由 `max_turns` 限制（默认 32，可用 `/auto turns N` 或网页设置调整）。执行超时默认 20 秒，模型可以在代码块开围栏同一行写 `timeout=45` 选择更长的截止时间（上限 `code_timeout_max_s=300`）。超时后 Harness 返回 `status=timeout` 并让模型继续，不会因为普通超时重启设备；`range()`、所有 `while` 条件（不只 `while True`）和 `time.sleep()` 已自动插桩。遍历其他可迭代对象的超长 `for` 循环，或单次迭代内长时间阻塞的调用，仍应显式调用 `__harness_check()`。
+执行结果按配置自动反馈给模型；后续修复代码仍需 `/run` 确认，自动反馈轮数由 `max_turns` 限制（默认 32，可用 `/auto turns N` 或“设置 → Harness 行为”调整）。执行超时默认 20 秒，模型可以在代码块开围栏同一行写 `timeout=45` 选择更长的截止时间（上限 `code_timeout_max_s=300`）。超时后 Harness 返回 `status=timeout` 并让模型继续，不会因为普通超时重启设备；`range()`、所有 `while` 条件（不只 `while True`）和 `time.sleep()` 已自动插桩。遍历其他可迭代对象的超长 `for` 循环，或单次迭代内长时间阻塞的调用，仍应显式调用 `__harness_check()`。
 
 后台任务在自己的 worker 线程运行，适合长时间采集或需要与用户继续交互的场景；短程序优先使用前台。停止是协作式的：只设置取消标志，在检查点抛出 `ExecutionCancelled`，阻塞在 C/SPI 调用中的任务可能只能重启设备。“停止并丢弃”会额外丢弃结果：排队任务立即移除，运行中的任务在协作检查点结束后直接移除，不产生可继续或可丢弃的 ready 结果。`timeout=0`/`infinite` 允许后台无截止时间运行，但不暂停 30 秒看门狗。
 
@@ -386,7 +386,7 @@ python tools/console_smoke.py --port COMx
 - **动态代码不是沙箱**：`/run` 和网页执行的代码拥有当前 MicroPython 进程权限，确认机制只用于避免误操作。
 - **Web 控制台是纯 HTTP**：只用于可信局域网，绝不端口映射到公网。管理密码、Cookie、对话和配置在局域网内可被嗅探。
 - **秘密保存在设备上**：`/secrets.json` 和 `/mcp.json` 是明文文件（MCP 的 Header 可能含 Token），串口或物理访问可读取；`/status`、`/api/status`、`/api/config` 和 `/api/mcp` 只返回 `_set` 布尔或 Header 名称。
-- **对话会落盘**：`/state/conversation.json` 保存已提交的对话和摘要，可能包含用户粘贴的敏感文本；`/state/background.json` 会保存最多 `background_max_records`（默认 8）条有界后台记录和输出，直到继续/丢弃。可用网页设置关闭持久化，`/clear` 和恢复出厂设置会删除。
+- **对话会落盘**：`/state/conversation.json` 保存已提交的对话和摘要，可能包含用户粘贴的敏感文本；`/state/background.json` 会保存最多 `background_max_records`（默认 8）条有界后台记录和输出，直到继续/丢弃。可在“设置 → Harness 行为”关闭持久化，`/clear` 和恢复出厂设置会删除。
 - **原生硬件直接可访问**：生成代码可以使用 `machine`/`neopixel` 操作真实引脚，错误接线、错误电压或误用 Flash/PSRAM、USB、控制台 UART、strapping 引脚可能损坏外设或导致设备无法正常启动；确认执行前请核对接线。
 - **自动模式默认关闭**：`auto_run` 需要显式开启和二次确认，会产生多次计费请求；MCP 的 `auto` 同样需要确认。
 - **超时不是硬沙箱**：`range()`、所有 `while` 条件、`time.sleep()` 和 `__harness_check()` 可协作停止；不调用任何钩子的 C/SPI 级阻塞、超长 `for` 迭代或单次迭代内的长时间阻塞仍可能由 30 秒看门狗复位。停止按钮只停止接收和后续回合，不能强制终止已经开始的 Python 执行。

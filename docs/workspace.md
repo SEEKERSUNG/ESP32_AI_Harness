@@ -76,6 +76,10 @@
 /workspace clean           # 清空 /workspace/tmp，需要确认
 ```
 
+## 网页文件页
+
+侧边栏“文件”页可以浏览整个设备 VFS、下载文件、查看/编辑文本、上传 UTF-8 文本、新建文件夹或文本文件、重命名和删除。只有 `/workspace` 下的路径可以写入、上传、重命名和删除；`/workspace` 与 `/workspace/tmp` 本身不能删除或重命名。固件、启动文件、`/harness`、`/skills`、`/state` 等系统文件在界面中标为“系统”，只能查看/下载。`/secrets.json` 和 `/mcp.json` 标记“敏感”，网页 API 不读取、不下载。上传只支持文本，受 `workspace_file_limit` 和工作区总量限制；下载单文件上限 256 KB。文件页是 `__workspace` 之外的图形化入口，不改变工作区限制，也不是代码执行沙箱。
+
 ## 限制
 
 默认配置：
