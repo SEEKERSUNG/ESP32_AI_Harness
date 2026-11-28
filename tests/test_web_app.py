@@ -1576,6 +1576,32 @@ class WebAppTests(unittest.TestCase):
             self.assertEqual(400, raised.exception.status)
         self.assertEqual(32, self.app.config.get("max_tool_calls"))
 
+    def test_config_updates_context_and_auto_compact(self):
+        token = self.token()
+        writer = self.call(request("POST", "/api/config", {
+            "context_tokens": 64000,
+            "auto_compact_tokens": 50000,
+            "auto_compact": False,
+        }, token=token))
+        self.assertEqual(200, writer.status)
+        self.assertEqual(64000, self.app.config.get("context_tokens"))
+        self.assertEqual(50000, self.app.config.get("auto_compact_tokens"))
+        self.assertIs(False, self.app.config.get("auto_compact"))
+        config = self.call(request("GET", "/api/config", token=token))
+        self.assertEqual(64000, config.json["context_tokens"])
+        self.assertEqual(50000, config.json["auto_compact_tokens"])
+        self.assertIs(False, config.json["auto_compact"])
+        for body in (
+            {"auto_compact_tokens": 64000},
+            {"context_tokens": 500},
+            {"auto_compact_tokens": 100},
+        ):
+            with self.assertRaises(WebError) as raised:
+                self.call(request("POST", "/api/config", body, token=token))
+            self.assertEqual(400, raised.exception.status)
+        self.assertEqual(64000, self.app.config.get("context_tokens"))
+        self.assertEqual(50000, self.app.config.get("auto_compact_tokens"))
+
     def test_setup_reports_last_reset_note(self):
         self.app.reset_info = {"code": 3, "name": "WDT_RESET"}
         self.app.reset_note = lambda: "设备上次因看门狗复位"

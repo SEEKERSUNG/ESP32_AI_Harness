@@ -58,7 +58,6 @@ DEFAULTS = {
     "workspace_files_limit": 64,
     "workspace_read_limit": 16384,
     "workspace_list_limit": 100,
-    "workspace_tmp_cleanup": True,
     "memory_char_limit": 8192,
     "memory_append_limit": 512,
     "search_enabled": True,

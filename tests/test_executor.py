@@ -9,6 +9,7 @@ from harness.executor import (
     ExecutionTimeout,
     Executor,
     instrument_source,
+    warm_viper_compiler,
 )
 from tests.support import DummyBoard
 
@@ -105,6 +106,95 @@ class ExecutorTests(unittest.TestCase):
         self.assertIn("SyntaxError", result.output)
         self.assertEqual(0, recovery.started)
 
+    def test_compile_memory_error_reports_stage_and_heap(self):
+        with mock.patch("harness.executor.compile",
+                        side_effect=MemoryError("allocating 260 bytes"),
+                        create=True):
+            result = Executor(DummyBoard(), timeout_s=5).execute(
+                "from micropython import viper\n"
+                "@viper\n"
+                "def f(n: int):\n"
+                "    for i in range(n):\n"
+                "        pass\n"
+                "print('never-ran')\n")
+        self.assertFalse(result.ok)
+        self.assertIn("MemoryError", result.error)
+        self.assertIn("compile stage", result.error)
+        self.assertIn("script did not start", result.error)
+        self.assertIn("compile_retries=2", result.error)
+        self.assertIn("viper/native=yes", result.error)
+        self.assertIn("not a low-memory condition", result.error)
+        self.assertIn("imported .mpy module", result.error)
+        self.assertNotIn("internal_free=", result.error)
+        self.assertNotIn("never-ran", result.output)
+
+    def test_compile_memory_error_reports_internal_heap_split(self):
+        fake = types.ModuleType("esp32")
+        fake.HEAP_DATA = 1
+        fake.idf_heap_info = lambda caps: [
+            (32767, 32031, 31744, 32031),
+            (8388608, 8320372, 8257536, 7239024),
+            (249784, 200356, 196608, 198720),
+        ]
+        with mock.patch.dict(sys.modules, {"esp32": fake}):
+            with mock.patch("harness.executor.compile",
+                            side_effect=MemoryError("allocating 144 bytes"),
+                            create=True):
+                result = Executor(DummyBoard()).execute("print('never-ran')\n")
+        self.assertIn("internal_free=232387", result.error)
+        self.assertIn("internal_largest_block=196608", result.error)
+        self.assertIn("psram_free=8320372", result.error)
+        self.assertNotIn("idf_free", result.error)
+
+    def test_compile_retries_memory_error_once(self):
+        real_compile = compile
+        calls = []
+
+        def flaky(source, filename, mode):
+            calls.append(1)
+            if len(calls) == 1:
+                raise MemoryError("allocating 116 bytes")
+            return real_compile(source, filename, mode)
+
+        with mock.patch("harness.executor.compile",
+                        side_effect=flaky, create=True):
+            result = Executor(DummyBoard(), timeout_s=5).execute(
+                "print('retry-ok')\n")
+        self.assertTrue(result.ok)
+        self.assertIn("retry-ok", result.output)
+        self.assertEqual(2, len(calls))
+
+    def test_warm_viper_compiler_swallows_failure(self):
+        with mock.patch("harness.executor.compile",
+                        side_effect=MemoryError("allocating 116 bytes"),
+                        create=True):
+            self.assertFalse(warm_viper_compiler())
+        self.assertTrue(warm_viper_compiler())
+
+    def test_compile_memory_error_without_viper_has_no_viper_hint(self):
+        with mock.patch("harness.executor.compile",
+                        side_effect=MemoryError("allocating 144 bytes"),
+                        create=True):
+            result = Executor(DummyBoard()).execute("print('never-ran')\n")
+        self.assertIn("compile stage", result.error)
+        self.assertNotIn("viper/native", result.error)
+
+    def test_compile_memory_note_ignores_similar_names(self):
+        with mock.patch("harness.executor.compile",
+                        side_effect=MemoryError("allocating 8 bytes"),
+                        create=True):
+            result = Executor(DummyBoard()).execute(
+                "@viper_deco\ndef f():\n    pass\n")
+        self.assertIn("compile stage", result.error)
+        self.assertNotIn("viper/native", result.error)
+
+    def test_runtime_memory_error_is_not_reported_as_compile(self):
+        result = Executor(DummyBoard()).execute(
+            "raise MemoryError('allocating 1 byte')")
+        self.assertFalse(result.ok)
+        self.assertIn("MemoryError", result.error)
+        self.assertNotIn("compile stage", result.error)
+
     def test_runtime_error_is_captured(self):
         result = Executor(DummyBoard()).execute("print('before')\n1 / 0")
         self.assertFalse(result.ok)
@@ -144,6 +234,33 @@ class ExecutorTests(unittest.TestCase):
         self.assertIn("opening fence line", observation)
         self.assertIn("after the closing fence", observation)
         self.assertTrue(feeds)
+
+    def test_watchdog_feed_is_time_gated(self):
+        feeds = []
+
+        def feed():
+            feeds.append(time.monotonic())
+
+        result = Executor(
+            DummyBoard(), timeout_s=30, feed=feed
+        ).execute("i = 0\nwhile i < 50000:\n    i += 1")
+        self.assertTrue(result.ok)
+        self.assertTrue(feeds)
+        self.assertLess(len(feeds), 10)
+
+    def test_cancel_poll_is_amortised(self):
+        calls = []
+
+        def cancel():
+            calls.append(1)
+            return False
+
+        result = Executor(
+            DummyBoard(), timeout_s=30, cancel_check=cancel
+        ).execute("i = 0\nwhile i < 100000:\n    i += 1")
+        self.assertTrue(result.ok)
+        self.assertTrue(calls)
+        self.assertLess(len(calls), 100)
 
     def test_sleep_times_out_without_waiting_for_full_sleep(self):
         started = time.monotonic()
@@ -231,6 +348,133 @@ class ExecutorTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertIn("range( literal", result.output)
         self.assertIn("1", result.output)
+
+    def test_instrument_source_skips_viper_and_native_functions(self):
+        source = (
+            "import micropython\n"
+            "@micropython.viper\n"
+            "def swap16(buf: ptr8, n: int):\n"
+            "    for i in range(n):\n"
+            "        buf[i] = 1\n"
+            "\n"
+            "@micropython.native\n"
+            "def count(n: int) -> int:\n"
+            "    total = 0\n"
+            "    while total < n:\n"
+            "        total += 1\n"
+            "    return total\n"
+            "\n"
+            "for j in range(3):\n"
+            "    pass\n"
+            "while ready:\n"
+            "    pass\n"
+        )
+        result = instrument_source(source)
+        viper_body = result.split("@micropython.native")[0]
+        self.assertIn("def swap16", viper_body)
+        self.assertIn("for i in range(n):", viper_body)
+        self.assertNotIn("__harness_range", viper_body)
+        native_body = result.split("@micropython.native")[1].split("for j")[0]
+        self.assertIn("while total < n:", native_body)
+        self.assertNotIn("__harness_check", native_body)
+        self.assertIn("for j in __harness_range(3):", result)
+        self.assertIn("while __harness_check() or (ready):", result)
+
+    def test_instrument_source_keeps_viper_block_with_strings(self):
+        source = (
+            "@micropython.viper\n"
+            "def f(n: int):\n"
+            "    '''doc\n"
+            "zero\n"
+            "    '''\n"
+            "    # comment at column zero is still inside the block\n"
+            "    for i in range(n):\n"
+            "        pass\n"
+            "\n"
+            "for k in range(2):\n"
+            "    pass\n"
+        )
+        result = instrument_source(source)
+        self.assertNotIn("__harness_range(n)", result)
+        self.assertIn("for k in __harness_range(2):", result)
+
+    def test_instrument_source_handles_indented_viper_function(self):
+        source = (
+            "class Holder:\n"
+            "    @micropython.viper\n"
+            "    def f(self, n: int):\n"
+            "        for i in range(n):\n"
+            "            pass\n"
+            "    def g(self):\n"
+            "        for i in range(2):\n"
+            "            pass\n"
+        )
+        result = instrument_source(source)
+        first, second = result.split("def g")
+        self.assertNotIn("__harness_range", first)
+        self.assertIn("__harness_range(2)", second)
+
+    def test_instrument_source_skips_bare_viper_imports(self):
+        source = (
+            "from micropython import viper, native as fast\n"
+            "@viper\n"
+            "def one(n: int):\n"
+            "    for i in range(n):\n"
+            "        pass\n"
+            "@fast\n"
+            "def two(n: int):\n"
+            "    while n:\n"
+            "        n -= 1\n"
+            "for ok in range(2):\n"
+            "    pass\n"
+        )
+        result = instrument_source(source)
+        skipped = result.split("for ok")[0]
+        self.assertNotIn("__harness_range", skipped)
+        self.assertNotIn("__harness_check", skipped)
+        self.assertIn("for ok in __harness_range(2):", result)
+
+    def test_instrument_source_skips_parenthesised_viper_import(self):
+        source = (
+            "from micropython import (\n"
+            "    viper,\n"
+            ")\n"
+            "@viper\n"
+            "def f(n: int):\n"
+            "    for i in range(n):\n"
+            "        pass\n"
+        )
+        self.assertEqual(source, instrument_source(source))
+
+    def test_instrument_source_bare_viper_needs_the_import(self):
+        source = (
+            "@viper\n"
+            "def f(n: int):\n"
+            "    for i in range(n):\n"
+            "        pass\n"
+        )
+        self.assertIn("__harness_range(n)", instrument_source(source))
+
+    def test_instrument_source_ignores_import_inside_string(self):
+        source = (
+            "doc = '''\n"
+            "from micropython import viper\n"
+            "'''\n"
+            "@viper\n"
+            "def f(n: int):\n"
+            "    for i in range(n):\n"
+            "        pass\n"
+        )
+        self.assertIn("__harness_range(n)", instrument_source(source))
+
+    def test_instrument_source_leaves_other_decorators_alone(self):
+        source = (
+            "@staticmethod\n"
+            "def f():\n"
+            "    for i in range(2):\n"
+            "        pass\n"
+        )
+        self.assertIn("__harness_range(2)", instrument_source(source))
 
     def test_instrument_source_makes_true_while_cooperative(self):
         self.assertIn(

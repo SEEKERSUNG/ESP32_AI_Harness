@@ -34,7 +34,13 @@ from harness.schedule import ScheduleStore, Scheduler
 from harness.config import Config
 from harness.console import Application
 from harness.device import Board
-from harness.executor import ExecutionResult, Executor
+from harness.executor import (
+    ExecutionResult,
+    Executor,
+    _compile_memory_note,
+    instrument_source,
+    warm_viper_compiler,
+)
 from harness.http_client import HTTPBodyReader, split_url
 from harness.llm import OpenAIClient
 from harness.llm_anthropic import AnthropicClient
@@ -278,6 +284,71 @@ def run():
         raise AssertionError("builtins.__harness_check leaked after execution")
     except AttributeError:
         pass
+
+    # The cooperative hook runs on every instrumented while condition. Keep
+    # it cheap: per-iteration cancel/feed/clock work once made generated loops
+    # ~25x slower on this board.
+    perf = Executor(Board(), timeout_s=30).execute(
+        "import time\n"
+        "n = 1000\n"
+        "t0 = time.ticks_us()\n"
+        "i = 0\n"
+        "while i < n:\n"
+        "    i += 1\n"
+        "print('check-us', time.ticks_diff(time.ticks_us(), t0) / n)\n")
+    assert perf.ok, perf.observation()
+    check_us = float(perf.output.split("check-us")[1].strip())
+    assert check_us < 50, "instrumented loop is %.1f us/iter" % check_us
+
+    # Viper functions compile to native code and only accept int/ptr locals;
+    # injecting __harness_range/__harness_check used to raise ViperTypeError.
+    viper = Executor(Board(), timeout_s=10).execute(
+        "import micropython\n"
+        "@micropython.viper\n"
+        "def total(n: int) -> int:\n"
+        "    s: int = 0\n"
+        "    for i in range(n):\n"
+        "        s += i\n"
+        "    return s\n"
+        "print('viper-ok', total(10))\n")
+    assert viper.ok, viper.observation()
+    assert "viper-ok 45" in viper.output, viper.observation()
+    # The bare form after "from micropython import viper" must be skipped too.
+    # On this firmware viper/native are compiler-recognised rather than
+    # importable names, so verify the rewriter output instead of executing it.
+    bare_source = (
+        "from micropython import viper\n"
+        "@viper\n"
+        "def total2(n: int) -> int:\n"
+        "    s: int = 0\n"
+        "    for i in range(n):\n"
+        "        s += i\n"
+        "    return s\n"
+    )
+    assert instrument_source(bare_source) == bare_source
+    remove_tree("/smoke-ws")
+    try:
+        from harness.workspace import Workspace
+
+        os.mkdir("/smoke-ws")
+        first = Workspace("/smoke-ws")
+        first.write("tmp/keep.py", "print('kept')\n")
+        second = Workspace("/smoke-ws")
+        assert second.read("tmp/keep.py")["text"] == "print('kept')\n"
+    finally:
+        remove_tree("/smoke-ws")
+
+    note = _compile_memory_note(
+        "from micropython import viper\n@viper\ndef f():\n    pass\n", 2)
+    assert "compile stage" in note, note
+    assert "compile_retries=2" in note, note
+    assert "viper/native=yes" in note, note
+    assert "not a low-memory condition" in note, note
+    plain_note = _compile_memory_note("print('x')\n", 2)
+    assert "internal_free=" in plain_note, plain_note
+    assert "internal_largest_block=" in plain_note, plain_note
+    assert "psram_free=" in plain_note, plain_note
+    assert warm_viper_compiler() in (True, False)
 
     # Exercise real worker threads, concurrent foreground execution and the
     # multi-job result store against an isolated root so the user's /state

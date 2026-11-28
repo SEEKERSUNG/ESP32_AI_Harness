@@ -4,7 +4,7 @@
 
 ```text
 /workspace/              持久数据
-/workspace/tmp/          AI 临时数据，启动时清空
+/workspace/tmp/          AI 临时数据，重启和更新后保留（不会自动清空）
 ```
 
 ## 模型如何使用
@@ -91,7 +91,6 @@
 | `workspace_files_limit` | 64 个文件 |
 | `workspace_read_limit` | 16384 字符 |
 | `workspace_list_limit` | 100 项 |
-| `workspace_tmp_cleanup` | true |
 
 路径可以是相对 `/workspace` 的相对路径，或以 `/workspace` 开头的绝对路径；禁止 `..`、反斜杠和非法字符，最多 4 层目录。`/workspace` 本身只作为根目录。
 
@@ -100,7 +99,7 @@
 | 目录 | 用途 | 生命周期 |
 |---|---|---|
 | `/workspace` | 用户资料和共享数据 | 持久，启动保留 |
-| `/workspace/tmp` | 模型临时文件 | 启动清空，可手动 `/workspace clean` |
+| `/workspace/tmp` | 模型临时文件 | 重启和更新后保留；需要时手动 `/workspace clean` |
 | `/skills/<name>/` | Skill 指令包 | 持久；删除 Skill 时移除 |
 
 工作区不是代码执行沙箱，也不是秘密存储。它只是 Harness 提供的受限文件接口。

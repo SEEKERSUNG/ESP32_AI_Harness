@@ -148,9 +148,23 @@ class BackgroundPool:
             if len(self.jobs) >= self.max_records:
                 self._prune_locked()
             if len(self.jobs) >= self.max_records:
+                total = len(self.jobs)
+                finished = 0
+                for job in self.jobs:
+                    if job.get("phase") in FINISHED_PHASES:
+                        finished += 1
+                needed = total - self.max_records + 1
+                if finished >= needed:
+                    raise RuntimeError(
+                        "Too many retained background jobs (records %d/%d, "
+                        "finished %d); continue or discard at least %d "
+                        "finished result(s) first"
+                        % (total, self.max_records, finished, needed))
                 raise RuntimeError(
-                    "Too many retained background jobs; continue or discard "
-                    "some results first")
+                    "Too many retained background jobs (records %d/%d, "
+                    "finished %d); wait for a running job to finish and "
+                    "discard it, or stop-and-discard one first"
+                    % (total, self.max_records, finished))
             self.seq += 1
             job = {
                 "id": self.seq,
@@ -780,7 +794,9 @@ class BackgroundPool:
     def summary_lines(self, include_output=False):
         jobs = self.snapshot()
         if not jobs:
-            return ["No background jobs."]
+            return [
+                "No background jobs (records 0/%s, finished 0, %s slots free)."
+                % (self.max_records, self.max_records)]
         active = 0
         ready = 0
         errors = 0
@@ -792,8 +808,14 @@ class BackgroundPool:
                 ready += 1
             elif phase == "error":
                 errors += 1
-        lines = ["Background jobs: %s active, %s ready, %s error." % (
-            active, ready, errors)]
+        free = self.max_records - len(jobs)
+        if free < 0:
+            free = 0
+        lines = [
+            "Background jobs: %s active, %s ready, %s error "
+            "(records %s/%s, finished %s, %s slots free)." % (
+                active, ready, errors, len(jobs), self.max_records,
+                ready + errors, free)]
         now = self.clock()
         for job in jobs:
             phase = job.get("phase", "?")

@@ -275,7 +275,7 @@ Context monitoring and compaction:
 /summary    # show the current summary
 ```
 
-Automatic compaction starts at about 150000 tokens; `context_tokens` is 200000. These are approximate on-device budgets, not a provider tokenizer's exact count.
+Automatic compaction starts at about 150000 tokens; `context_tokens` is 200000. Both are configurable in Settings → Harness behavior (the threshold must stay below the context length). These are approximate on-device budgets, not a provider tokenizer's exact count.
 
 ## Common commands
 

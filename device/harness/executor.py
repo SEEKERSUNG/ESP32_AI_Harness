@@ -268,6 +268,328 @@ def _find_while_colon(source, index):
     return None
 
 
+def _line_starts_blank(source, index):
+    """True when only spaces/tabs precede index on its line."""
+    cursor = index - 1
+    while cursor >= 0:
+        char = source[cursor]
+        if char == "\n":
+            return True
+        if char != " " and char != "\t":
+            return False
+        cursor -= 1
+    return True
+
+
+def _line_state(source, start, end, depth, triple):
+    """Update bracket depth and triple-quote state across one line."""
+    index = start
+    while index < end:
+        char = source[index]
+        if triple is not None:
+            if char == "\\":
+                index += 2
+                continue
+            if source.startswith(triple * 3, index):
+                triple = None
+                index += 3
+                continue
+            index += 1
+            continue
+        if char == "'" or char == '"':
+            if source.startswith(char * 3, index):
+                triple = char
+                index += 3
+                continue
+            index += 1
+            while index < end:
+                inner = source[index]
+                if inner == "\\":
+                    index += 2
+                    continue
+                index += 1
+                if inner == char:
+                    break
+            continue
+        if char == "#":
+            break
+        if char == "(" or char == "[" or char == "{":
+            depth += 1
+        elif char == ")" or char == "]" or char == "}":
+            if depth > 0:
+                depth -= 1
+        index += 1
+    return depth, triple
+
+
+def _block_end(source, cursor, indent):
+    """Return the index of the first line outside an indented block."""
+    length = len(source)
+    depth = 0
+    triple = None
+    while cursor < length:
+        end = source.find("\n", cursor)
+        if end < 0:
+            end = length
+        line_end = end
+        if end > cursor and source[end - 1] == "\r":
+            line_end = end - 1
+        line = source[cursor:line_end]
+        stripped = line.lstrip(" \t")
+        if triple is None and depth == 0:
+            if stripped and stripped[0] != "#":
+                if len(line) - len(stripped) <= indent:
+                    return cursor
+        depth, triple = _line_state(source, cursor, line_end, depth, triple)
+        cursor = end + 1
+    return length
+
+
+def _micropython_imports(source, index):
+    """Return bare names imported by ``from micropython import ...``.
+
+    ``index`` points at the ``f`` of ``from`` at a statement start. Aliases
+    are resolved (``from micropython import viper as v`` yields ``v``), and
+    the list may name ``viper``, ``native`` or both. Returns None when the
+    statement is not a micropython import.
+    """
+    length = len(source)
+    cursor = _skip_spaces(source, index + 4)
+    if not source.startswith("micropython", cursor):
+        return None
+    cursor = _skip_spaces(source, cursor + 11)
+    if not source.startswith("import", cursor):
+        return None
+    cursor = _skip_spaces(source, cursor + 6)
+    # The name list may be wrapped in parentheses and span lines.
+    end = cursor
+    depth = 0
+    while end < length:
+        char = source[end]
+        if char == "#":
+            newline = source.find("\n", end)
+            end = length if newline < 0 else newline
+            continue
+        if char == "\n" and depth == 0:
+            break
+        if char == "(" or char == "[" or char == "{":
+            depth += 1
+        elif char == ")" or char == "]" or char == "}":
+            if depth > 0:
+                depth -= 1
+        end += 1
+    text = source[cursor:end]
+    comment = text.find("#")
+    if comment >= 0:
+        text = text[:comment]
+    semi = text.find(";")
+    if semi >= 0:
+        text = text[:semi]
+    names = []
+    for part in text.split(","):
+        part = part.strip().strip("()").strip()
+        if not part:
+            continue
+        as_index = part.find(" as ")
+        if as_index >= 0:
+            part = part[as_index + 4:].strip()
+        if not part:
+            continue
+        bare = True
+        for char in part:
+            if not _is_identifier_char(char):
+                bare = False
+                break
+        if bare:
+            names.append(part)
+    return names
+
+
+def _viper_block_end(source, index, names):
+    """Return the end of a @micropython.viper/native decorated function.
+
+    Viper code is compiled to native machine code and only accepts int/ptr
+    locals; injecting ``__harness_range`` (an object) or a Python
+    ``__harness_check()`` call makes its compiler raise ViperTypeError.
+    ``native`` code accepts objects but is likewise left uninstrumented so
+    the native optimizer is not disturbed. These functions simply rely on
+    the watchdog, like any other code that does not reach a hook.
+
+    ``names`` holds bare names imported from micropython (``from micropython
+    import viper`` makes ``@viper`` equivalent to ``@micropython.viper``).
+    """
+    length = len(source)
+    end = source.find("\n", index)
+    if end < 0:
+        end = length
+    line_end = end
+    if end > index and source[end - 1] == "\r":
+        line_end = end - 1
+    name = source[index + 1:line_end].strip()
+    comment = name.find("#")
+    if comment >= 0:
+        name = name[:comment].strip()
+    paren = name.find("(")
+    if paren >= 0:
+        name = name[:paren].strip()
+    if name in ("micropython.viper", "micropython.native"):
+        pass
+    elif name in names:
+        pass
+    else:
+        return None
+    cursor = end + 1
+    while cursor < length:
+        end = source.find("\n", cursor)
+        if end < 0:
+            end = length
+        line_end = end
+        if end > cursor and source[end - 1] == "\r":
+            line_end = end - 1
+        line = source[cursor:line_end]
+        stripped = line.lstrip(" \t")
+        indent = len(line) - len(stripped)
+        if not stripped or stripped[0] == "#":
+            cursor = end + 1
+            continue
+        if stripped[0] == "@":
+            cursor = end + 1
+            continue
+        if (stripped.startswith("def ")
+                or stripped.startswith("async def ")
+                or stripped.startswith("def(")):
+            return _block_end(source, end + 1, indent)
+        return None
+    return None
+
+
+def _source_mentions_viper(source):
+    lowered = source.lower()
+    if ("@micropython.viper" in lowered
+            or "@micropython.native" in lowered):
+        return True
+    for marker in ("@viper", "@native"):
+        start = lowered.find(marker)
+        while start >= 0:
+            cursor = start + len(marker)
+            if (cursor >= len(lowered)
+                    or not _is_identifier_char(lowered[cursor])):
+                return True
+            start = lowered.find(marker, cursor)
+    return False
+
+
+def _heap_snapshot():
+    """Return (internal_free, internal_largest_block, psram_free) or None.
+
+    ``esp32.idf_heap_info`` returns ``(total_size, total_free,
+    largest_free_block, minimum_free_bytes)`` per region, including the 8 MB
+    PSRAM heap. A 144-byte compile allocation can fail even when PSRAM shows
+    megabytes free, because small allocations are served from internal RAM;
+    that is why the note reports the internal free total and the largest
+    contiguous internal block separately from PSRAM.
+    """
+    try:
+        import esp32
+        entries = esp32.idf_heap_info(esp32.HEAP_DATA)
+    except Exception:
+        return None
+    internal_free = 0
+    internal_largest = 0
+    psram_free = 0
+    for entry in entries:
+        total = entry[0]
+        free = entry[1]
+        largest = entry[2]
+        if total >= 1048576:
+            psram_free += free
+        else:
+            internal_free += free
+            if largest > internal_largest:
+                internal_largest = largest
+    return (internal_free, internal_largest, psram_free)
+
+
+def _compile_memory_note(source, retries):
+    """Explain a MemoryError raised by compile() after the retries failed.
+
+    Viper/native functions are compiled to native code during compile(), not
+    when the def executes, so a failed compile means no script statement ran
+    (and any printed output the caller expected never existed). The first
+    native emission in a fresh execution can fail spuriously even with tens
+    of kilobytes of internal heap free and then succeed on the next attempt,
+    so the message reports the retry count instead of blaming free memory.
+    """
+    note = ("compile stage: the script did not start, so no script output "
+            "exists; compile_retries=%d" % retries)
+    if _source_mentions_viper(source):
+        note += ("; viper/native=yes; the first native emission in a fresh "
+                 "execution can fail spuriously even with tens of kilobytes "
+                 "free, so this is not a low-memory condition; move "
+                 "viper/native functions into an imported .mpy module if it "
+                 "persists")
+    else:
+        heaps = _heap_snapshot()
+        if heaps is not None:
+            note += ("; heap: internal_free=%d internal_largest_block=%d "
+                     "psram_free=%d" % heaps)
+    return " (%s)" % note
+
+
+_VIPER_WARMUP = (
+    "import micropython\n"
+    "@micropython.viper\n"
+    "def __harness_warmup(n: int) -> int:\n"
+    "    return n\n"
+)
+
+
+def compile_source(source, filename):
+    """Compile generated source, retrying a spurious first MemoryError.
+
+    The same firmware quirk that affects Executor applies to pre-validation
+    compiles (``__background action=start`` and scheduled code tasks): the
+    first native emission can fail even with plenty of internal heap and
+    succeed on the next attempt.
+    """
+    retries = 0
+    while True:
+        try:
+            return compile(source, filename, "exec")
+        except MemoryError:
+            if retries >= 2:
+                raise
+            retries += 1
+            gc.collect()
+
+
+def describe_compile_error(exc, source):
+    """Describe a failed pre-validation compile of user source."""
+    if isinstance(exc, SyntaxError):
+        return "source has a syntax error: %s" % exc
+    if isinstance(exc, MemoryError):
+        return "compile-time MemoryError: %s%s" % (
+            exc, _compile_memory_note(source, 2))
+    return "source could not be compiled: %s: %s" % (
+        type(exc).__name__, exc)
+
+
+def warm_viper_compiler():
+    """Consume the spurious first native-emission failure after boot.
+
+    On this port the first viper emission in a fresh process can raise
+    MemoryError although plenty of heap is free, and the next attempt
+    succeeds. Compiling a throwaway viper function at startup turns that
+    into the throwaway attempt. Failure is harmless; later compiles simply
+    retry.
+    """
+    try:
+        compile(_VIPER_WARMUP, "<viper-warmup>", "exec")
+        return True
+    except Exception:
+        return False
+
+
 def instrument_source(source):
     """Rewrite range() and while conditions to cooperative checks.
 
@@ -277,13 +599,19 @@ def instrument_source(source):
     ``while __harness_check() or (<condition>):``; the check returns None
     normally, so the original truth value is preserved while the deadline,
     stop request and watchdog feed still run each iteration. The scanner skips
-    strings and comments and leaves attribute/method names alone.
+    strings and comments and leaves attribute/method names alone. Functions
+    decorated with ``@micropython.viper`` or ``@micropython.native`` are copied
+    verbatim: viper only accepts int/ptr locals and rejects the injected
+    object calls with ViperTypeError. A ``from micropython import viper`` (or
+    ``native``, optionally aliased) makes the bare ``@viper`` form equivalent
+    and is tracked while scanning.
     """
     out = []
     index = 0
     length = len(source)
     quote = None
     triple = False
+    viper_names = []
     while index < length:
         char = source[index]
         if quote is not None:
@@ -323,6 +651,20 @@ def instrument_source(source):
             out.append(source[index:end])
             index = end
             continue
+        if (char == "f"
+                and source.startswith("from", index)
+                and _line_starts_blank(source, index)):
+            imported = _micropython_imports(source, index)
+            if imported:
+                for name in imported:
+                    if name not in viper_names:
+                        viper_names.append(name)
+        if char == "@" and _line_starts_blank(source, index):
+            end = _viper_block_end(source, index, viper_names)
+            if end is not None:
+                out.append(source[index:end])
+                index = end
+                continue
         if source.startswith("range", index):
             previous = source[index - 1] if index > 0 else ""
             if not (_is_identifier_char(previous) or previous == "."):
@@ -697,20 +1039,84 @@ class Executor:
         runtime = execution_runtime()
         registered = False
 
-        def check():
-            if self.cancel_check is not None:
+        # Every instrumented while/range hook lands here, so the fast path
+        # must not allocate, look up attributes or call into the scheduler.
+        # Clock functions, the cancel callback and the watchdog feed are
+        # resolved once per execution; a microsecond counter decides when the
+        # slower work runs. Measured on the reference board: a Python call
+        # costs ~6 us, ticks_ms ~3 us and a bound method ~7 us, so the old
+        # check (~45-80 us per iteration) dominated every generated loop.
+        real_time = runtime.real_time
+        if (hasattr(real_time, "ticks_ms")
+                and hasattr(real_time, "ticks_diff")):
+            clock_now = real_time.ticks_ms
+            clock_diff = real_time.ticks_diff
+        else:
+            monotonic = real_time.monotonic
+
+            def clock_now():
+                return int(monotonic() * 1000)
+
+            def clock_diff(left, right):
+                return left - right
+
+        cancel = self.cancel_check
+        feed = self.feed
+        cancel_poll_ms = 25
+        feed_poll_ms = 250
+        counter = 0
+        # Cooperative polls are amortised over loop iterations. The window
+        # grows only while checks stay cheap (span <= 2 ms for the whole
+        # window) and collapses to one iteration as soon as a loop body is
+        # slow, so a blocking body cannot stretch the deadline, stop or
+        # watchdog latency to dozens of iterations. A hard cap of 32 also
+        # bounds the blind window when a fast loop is followed by a slow one.
+        window = 1
+        polled = clock_now()
+        next_cancel = polled
+        next_feed = polled
+
+        def poll():
+            nonlocal window, polled, next_cancel, next_feed
+            moment = clock_now()
+            if cancel is not None and clock_diff(moment, next_cancel) >= 0:
+                next_cancel = moment + cancel_poll_ms
                 try:
-                    stop = self.cancel_check()
+                    stop = cancel()
                 except Exception:
                     stop = False
                 if stop:
-                    raise ExecutionCancelled(
-                        "Execution stop requested")
-            if deadline is not None and self._elapsed(deadline) >= 0:
+                    raise ExecutionCancelled("Execution stop requested")
+            if deadline is not None and clock_diff(moment, deadline) >= 0:
                 raise ExecutionTimeout(
                     "Execution exceeded %s second(s)" % timeout
                 )
-            self._feed()
+            if feed is not None and clock_diff(moment, next_feed) >= 0:
+                next_feed = moment + feed_poll_ms
+                try:
+                    feed()
+                except Exception:
+                    pass
+            span = clock_diff(moment, polled)
+            polled = moment
+            if span <= 2:
+                window = 32
+            elif span <= 8:
+                window = 16
+            elif span <= 20:
+                window = 4
+            elif span <= 50:
+                window = 2
+            else:
+                window = 1
+
+        def check():
+            nonlocal counter
+            counter += 1
+            if counter < window:
+                return
+            counter = 0
+            poll()
 
         # Always use the real time module captured by the runtime. During
         # concurrent executions sys.modules['time'] is the routing proxy, and
@@ -782,6 +1188,7 @@ class Executor:
         elif not isolated:
             sys.stdout = writer
             sys.stderr = writer
+        compile_stage = False
         try:
             try:
                 # Instrument when there is a deadline or a cooperative cancel
@@ -789,7 +1196,11 @@ class Executor:
                 # while/range checkpoints for stop requests and watchdog feeds.
                 compiled_source = (
                     instrument_source(source) if instrumented else source)
-                code = compile(compiled_source, filename, "exec")
+                compile_stage = True
+                # compile_source retries up to three attempts; if it raises,
+                # every retry was consumed.
+                code = compile_source(compiled_source, filename)
+                compile_stage = False
                 if self.recovery is not None:
                     self.recovery.begin(source)
                     marked = True
@@ -815,6 +1226,8 @@ class Executor:
                 error = "ExecutionCancelled: %s" % exc
             except BaseException as exc:
                 error = "%s: %s" % (type(exc).__name__, exc)
+                if compile_stage and isinstance(exc, MemoryError):
+                    error += _compile_memory_note(source, 2)
                 error_limit = min(512, self.output_limit)
                 if len(error) > error_limit:
                     error = error[:max(0, error_limit - 22)] + "\n...[error truncated]"
@@ -842,14 +1255,6 @@ class Executor:
             timed_out,
             cancelled,
         )
-
-    def _feed(self):
-        if self.feed is None:
-            return
-        try:
-            self.feed()
-        except Exception:
-            pass
 
     def _resolve_timeout(self, timeout_s):
         raw = self.timeout_s if timeout_s is None else timeout_s

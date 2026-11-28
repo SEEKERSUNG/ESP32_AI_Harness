@@ -2,6 +2,7 @@ import json
 import time
 
 from . import clock
+from .executor import compile_source, describe_compile_error
 from .http_tool import HttpTool
 from .llm import (
     LLMStreamCancelled,
@@ -571,8 +572,9 @@ def system_prompt(config, board, workspace=False):
             "execution turn. For a nontrivial program that needs several debug "
             "cycles, write the first version to /workspace/tmp/<name>.py once, then "
             "use read/replace/append and run; this avoids resending the whole "
-            "program in every reply. /workspace/tmp is AI scratch space and may be "
-            "cleared on boot; keep user files outside tmp. Generated code may "
+            "program in every reply. /workspace/tmp is AI scratch space that now "
+            "persists across reboots; remove files you no longer need instead of "
+            "assuming they disappear, and keep user files outside tmp. Generated code may "
             "access workspace files only when the task truly needs computation "
             "over their contents. "
         )
@@ -1160,7 +1162,7 @@ def native_tool_definitions(config, skills=None, workspace=None, memory=None,
                 "action": {
                     "type": "string",
                     "enum": ["list", "status", "stop", "stop_discard", "note",
-                             "discard", "start"],
+                             "discard", "discard_all", "start"],
                 },
                 "id": {"type": "integer", "description": "Job id."},
                 "text": {"type": "string", "description": "New job note."},
@@ -1444,9 +1446,9 @@ def _native_tool_prompt(config, skills=None, workspace=None, memory=None):
             "and run the stored file; only the changed fragment is sent instead of "
             "the whole program. Do not also return a python block for the same "
             "version.",
-            "/workspace is persistent user data; /workspace/tmp is AI scratch space "
-            "and may be cleared on boot. action=run asks for confirmation unless "
-            "AUTO mode is enabled.",
+            "/workspace is persistent user data; /workspace/tmp is AI scratch "
+            "space that persists across reboots (clean it with /workspace clean). "
+            "action=run asks for confirmation unless AUTO mode is enabled.",
         ])
     return "\n".join(lines)
 
@@ -1484,6 +1486,7 @@ def builtin_tool_prompt(config, skills=None, workspace=None, memory=None):
         '- stop and discard all: ```tool {"name":"__background","args":{"action":"stop_discard"}}```',
         '- note: ```tool {"name":"__background","args":{"action":"note","id":2,"text":"dashboard"}}```',
         '- discard: ```tool {"name":"__background","args":{"action":"discard","id":2}}```',
+        '- discard all finished: ```tool {"name":"__background","args":{"action":"discard_all"}}```',
     ]
     if (config.get("background_execution", True)
             and config.get("auto_run", False)):
@@ -1632,7 +1635,7 @@ def builtin_tool_prompt(config, skills=None, workspace=None, memory=None):
             "only when the task genuinely needs computation over file contents.",
             "The workspace run timeout is the JSON args.timeout field, separate from a python fence timeout= annotation.",
             "A workspace run is foreground work on the serial main thread; it may run while background jobs continue, but avoid modifying files another job is using.",
-            "/workspace is persistent user data. /workspace/tmp is AI scratch space and may be cleared on boot.",
+            "/workspace is persistent user data. /workspace/tmp is AI scratch space that persists across reboots; clean it with /workspace clean when no longer needed.",
             "Stored scripts are data only. With /auto run on, __workspace run executes a .py file directly; "
             "otherwise Harness asks the user to confirm before executing.",
         ])
@@ -2809,10 +2812,10 @@ class Agent:
                     "confirmation.",
                     self._elapsed(started))
             try:
-                compile(source, "<background-tool>", "exec")
+                compile_source(source, "<background-tool>")
             except Exception as exc:
                 return ToolResult(
-                    False, "", "source has a syntax error: %s" % exc,
+                    False, "", describe_compile_error(exc, source),
                     self._elapsed(started))
             note = str(args.get("note", "") or "")[:200]
             try:
@@ -2939,6 +2942,24 @@ class Agent:
                 True, "Background job #%s note set to: %s" % (
                     job.get("id"), job.get("note")),
                 "", self._elapsed(started))
+        if action in ("discard_all", "discardall", "discard-all"):
+            discard_all = getattr(runner, "discard_all_backgrounds", None)
+            if discard_all is None:
+                return ToolResult(
+                    False, "", "Discarding background results is unavailable",
+                    self._elapsed(started))
+            try:
+                count = discard_all(record=True)
+            except Exception as exc:
+                return ToolResult(
+                    False, "", str(exc), self._elapsed(started))
+            if not count:
+                return ToolResult(
+                    False, "", "No finished background result to discard.",
+                    self._elapsed(started))
+            return ToolResult(
+                True, "Discarded %s finished background result(s)." % count,
+                "", self._elapsed(started))
         if action in ("discard", "delete"):
             try:
                 discarded = runner.discard_background(
@@ -2956,7 +2977,8 @@ class Agent:
         return ToolResult(
             False, "",
             "Usage: action=list|status|stop|stop_discard|note|discard with "
-            "optional id; stop supports no id to stop all active jobs.",
+            "optional id, or discard_all; stop supports no id to stop all "
+            "active jobs.",
             self._elapsed(started))
 
     def _run_schedule_tool(self, args):

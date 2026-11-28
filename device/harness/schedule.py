@@ -17,6 +17,7 @@ except ImportError:
 
 from . import clock
 from .config import join_path, read_json, remove_file, write_json
+from .executor import compile_source, describe_compile_error
 
 DEFAULT_PATH = "/state/schedules.json"
 DEFAULT_MAX_TASKS = 8
@@ -321,9 +322,9 @@ class Scheduler:
             if len(source) > MAX_SOURCE:
                 raise ValueError("source exceeds %s characters" % MAX_SOURCE)
             try:
-                compile(source, "<scheduled-code>", "exec")
+                compile_source(source, "<scheduled-code>")
             except Exception as exc:
-                raise ValueError("source has a syntax error: %s" % exc)
+                raise ValueError(describe_compile_error(exc, source))
             prompt = ""
             if fields.get("timeout") is not None:
                 timeout = _bounded_int(fields.get("timeout"), 0, 0, 86400)
@@ -489,10 +490,9 @@ class Scheduler:
                     raise ValueError(
                         "source exceeds %s characters" % MAX_SOURCE)
                 try:
-                    compile(source, "<scheduled-code>", "exec")
+                    compile_source(source, "<scheduled-code>")
                 except Exception as exc:
-                    raise ValueError(
-                        "source has a syntax error: %s" % exc)
+                    raise ValueError(describe_compile_error(exc, source))
                 task["source"] = source
                 changed = True
             if "timeout" in fields and task_type == "code":

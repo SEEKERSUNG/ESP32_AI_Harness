@@ -61,11 +61,11 @@ URL:  http://192.168.4.1/
 | `/undo [N]` / `/rewind [N]` | 删除第 N 条最近用户消息及其后的全部回复（默认 N=1） |
 | `/clear` | 清除历史、摘要、待执行代码、最近执行状态和持久化文件 |
 
-默认 `persist_conversation=true`，已提交的历史、摘要和首个用户请求锚点会原子写入 `/state/conversation.json`，设备复位/重启后自动恢复；`/clear` 删除该文件，恢复出厂设置也会删除。“设置 → Harness 行为”可关闭持久化。对话可能包含用户粘贴的敏感文本，文件位于设备明文文件系统。上下文预算按近似 token 计算：ASCII 约 4 字符/token，非 ASCII 约 1 字符/token；默认 `context_tokens=200000`。达到消息数、字符数或 token 限制时，最旧消息会先被移除，但当前任务、源码和执行观察会被保留。单次任务超过 `input_limit`（默认 2000 字符）会被拒绝。
+默认 `persist_conversation=true`，已提交的历史、摘要和首个用户请求锚点会原子写入 `/state/conversation.json`，设备复位/重启后自动恢复；`/clear` 删除该文件，恢复出厂设置也会删除。“设置 → Harness 行为”可关闭持久化。对话可能包含用户粘贴的敏感文本，文件位于设备明文文件系统。上下文预算按近似 token 计算：ASCII 约 4 字符/token，非 ASCII 约 1 字符/token；默认 `context_tokens=200000`，可在网页“设置 → Harness 行为”调整（1024–2000000）。达到消息数、字符数或 token 限制时，最旧消息会先被移除，但当前任务、源码和执行观察会被保留。单次任务超过 `input_limit`（默认 2000 字符）会被拒绝。
 
 `/undo` 只回退对话上下文，不恢复工作区文件、Skill、Memory 或执行造成的设备状态；它会同时清除待执行代码、Skill 提案、待回答问题和最近执行结果。网页不再提供顶栏回退按钮；每条真实用户消息旁显示“回退到这里”，实时消息在正常完成或手动停止后设备回合结束时补上按钮，刷新历史后同样显示。压缩摘要不会被重建；历史索引以当前 `agent.history` 为准。
 
-自动压缩默认开启：估算上下文达到 `auto_compact_tokens`（默认 150000）时，Harness 用流式请求摘要较早消息，保留最近 `compact_keep_messages` 条，并把摘要放入系统提示词。首个用户请求会作为会话锚点单独保存并始终注入系统提示词，因此压缩后仍能回答“最初问的是什么”；`/clear` 才会重置锚点。摘要请求至少使用 `summary_timeout`（默认 300 秒），并复用 API 重试策略。`/compact` 可随时手动执行。
+自动压缩默认开启：估算上下文达到 `auto_compact_tokens`（默认 150000，可在网页设置调整，必须小于 `context_tokens`）时，Harness 用流式请求摘要较早消息，保留最近 `compact_keep_messages` 条，并把摘要放入系统提示词。首个用户请求会作为会话锚点单独保存并始终注入系统提示词，因此压缩后仍能回答“最初问的是什么”；`/clear` 才会重置锚点。摘要请求至少使用 `summary_timeout`（默认 300 秒），并复用 API 重试策略。`/compact` 可随时手动执行。
 
 ## MEMORY.md
 
@@ -193,12 +193,13 @@ Harness 不再支持模型自定义可执行 Tool。模型通过原生 function 
 | `/run` | 确认后在串口主线程前台执行待执行代码 |
 | `/run bg [备注]` | 确认后创建后台任务；可继续生成/创建更多任务，立即返回提示符 |
 | `/continue [ID]` | 提交某个（或最早完成的）后台结果并继续模型回合 |
-| `/background` | 列出所有后台任务的编号、备注、状态和耗时 |
+| `/background` | 列出所有后台任务的编号、备注、状态、耗时和记录配额（records N/M、finished、空闲槽位） |
 | `/background status ID` | 查看单个任务及输出尾部 |
 | `/background stop [ID]` | 请求停止一个任务；省略 ID 时停止全部活动任务 |
 | `/background stopdiscard [ID]` | 停止并丢弃结果：排队任务立即移除，运行中任务在检查点后移除且不产生 ready 结果 |
 | `/background note ID TEXT` | 修改任务备注 |
-| `/background discard ID` | 丢弃已完成/失败的任务记录 |
+| `/background discard ID` | 丢弃一个已完成/失败的任务记录 |
+| `/background discard all` | 一次清空全部已完成/失败记录（别名 `discardall`），只写盘一次 |
 | `/schedule` | 列出定时任务、下次执行时间和上次状态 |
 | `/schedule status ID` | 查看单个任务的完整提示词或源码 |
 | `/schedule run ID` | 把任务排到当前时间，设备空闲时执行 |
@@ -213,7 +214,7 @@ Harness 不再支持模型自定义可执行 Tool。模型通过原生 function 
 
 ### 后台执行
 
-短程序应优先在前台执行；只有长时间运行、需要与用户继续交互并行，或用户明确要求时才使用后台，并应说明原因。`background_execution=true`（默认）时，网页 AUTO 运行和手动“后台运行”会创建后台任务；每个任务在自己的 worker 线程执行。`__workspace action=run` 支持 `background=true`，串口可用 `/workspace run bg <path>` 直接把工作区脚本放入后台。`/api/chat` 或 `/api/run` 的 NDJSON 流在任务入队后结束，浏览器通过 `/api/status.backgrounds` 轮询所有任务。AUTO 模式（`auto_run=true`）且 `auto_feedback=true` 时，设备主线程在 `esp32>` 空闲时会自动把已完成结果写入上下文并继续模型对话；网页只显示状态，不再要求手动选择“继续/丢弃”，即使浏览器标签页关闭或隐藏也能继续。自动继续期间网页轮询 `GET /api/live` 增量显示回复，完成后以 `/api/history` 为准。AUTO 关闭或 `auto_feedback=false` 时保留手动“继续/丢弃”按钮和串口 `/continue`。最多同时运行 `background_max_jobs` 个（默认 4，可在“设置 → Harness 行为”改为 1–4），超出的任务保持 `queued`，槽位空出后自动启动。结果观察会带上原任务摘要，并提示“其他后台任务可能仍在运行、后续用户消息可能无关”，避免把另外插入的问题混进原任务。任务记录保存在 `/state/background.json`（受 `persist_conversation` 控制，默认最多 8 条）；设备重启后已完成结果可恢复，未完成记录显示为 `error` 且不会自动重跑。降低 `background_max_records` 只会裁剪失败/非 ready 记录，不会静默丢弃可继续的 ready 结果。
+短程序应优先在前台执行；只有长时间运行、需要与用户继续交互并行，或用户明确要求时才使用后台，并应说明原因。`background_execution=true`（默认）时，网页 AUTO 运行和手动“后台运行”会创建后台任务；每个任务在自己的 worker 线程执行。`__workspace action=run` 支持 `background=true`，串口可用 `/workspace run bg <path>` 直接把工作区脚本放入后台。`/api/chat` 或 `/api/run` 的 NDJSON 流在任务入队后结束，浏览器通过 `/api/status.backgrounds` 轮询所有任务。AUTO 模式（`auto_run=true`）且 `auto_feedback=true` 时，设备主线程在 `esp32>` 空闲时会自动把已完成结果写入上下文并继续模型对话；网页只显示状态，不再要求手动选择“继续/丢弃”，即使浏览器标签页关闭或隐藏也能继续。自动继续期间网页轮询 `GET /api/live` 增量显示回复，完成后以 `/api/history` 为准。AUTO 关闭或 `auto_feedback=false` 时保留手动“继续/丢弃”按钮和串口 `/continue`。最多同时运行 `background_max_jobs` 个（默认 4，可在“设置 → Harness 行为”改为 1–4），超出的任务保持 `queued`，槽位空出后自动启动。结果观察会带上原任务摘要，并提示“其他后台任务可能仍在运行、后续用户消息可能无关”，避免把另外插入的问题混进原任务。任务记录保存在 `/state/background.json`（受 `persist_conversation` 控制，默认最多 8 条）；达到 `background_max_records` 后创建新任务会被拒绝，错误会给出 `retained N/M` 和至少需要继续/丢弃的条数，`/background list` 头部也显示该配额。设备重启后已完成结果可恢复，未完成记录显示为 `error` 且不会自动重跑。降低 `background_max_records` 只会裁剪失败/非 ready 记录，不会静默丢弃可继续的 ready 结果。
 
 后台运行期间**仍可发送新对话、前台运行代码或再创建后台任务**。AUTO 开启时，新生成的代码会创建新的后台任务；槽位满则排队。手动待执行卡片提供“前台运行”和“后台运行”两个按钮；前台运行回到串口主线程，与后台任务并行。`__workspace run` 也回到主线程，可以运行。配置写入、回退、`/clear`、`/repl`、恢复出厂设置等维护操作在任务运行期间仍被拒绝。AUTO 模式下新的对话结束后，如果某个后台结果已就绪，设备主线程会按 `auto_feedback` 自动继续该任务（手动模式由网页轮询继续）；若存在待执行代码、Skill 提案或问题，则先等待处理，之后再自动继续。`/api/status` 的 `turn_busy` 只表示模型回合锁，`busy` 还包含后台任务。
 
@@ -229,6 +230,7 @@ AI 可通过内置 `__background` 工具管理多个任务：
 {"name":"__background","args":{"action":"stop_discard"}}
 {"name":"__background","args":{"action":"note","id":2,"text":"dashboard"}}
 {"name":"__background","args":{"action":"discard","id":2}}
+{"name":"__background","args":{"action":"discard_all"}}
 ```
 
 `action=start` 只在 **AUTO 模式（`auto_run=true`）** 下允许，模型可直接提交裸 MicroPython 源码、备注和可选超时，无需再生成 python 代码块。AUTO 关闭时会返回错误并要求模型改为普通 python 代码块，由用户确认前台/后台执行。`source` 最大为 `code_limit`（默认 12288 字符）；解析器为 `start` 放宽工具参数上限以容纳源码，其他 `__background` 动作仍使用 `tool_args_limit`。明显无限循环默认拒绝；确实要长期运行的任务必须显式传 `timeout=0`。启动后模型不应再重复提交同一段代码。`start` 启动的任务仍受最大并发数、结果记录上限、协作停止和看门狗规则约束。
@@ -316,7 +318,7 @@ GPIO 26–37（Flash/PSRAM）、43/44（控制台 UART）、19/20（原生 USB�
 | `/workspace remove <path>` | 删除文件/空目录（确认） |
 | `/workspace clean` | 清空 `/workspace/tmp`（确认） |
 
-模型通过 `__workspace` 工具读写；`write`/`append`/`replace` 修改文件，`replace` 使用唯一 `match`（`all=true` 可全部替换，空 `content` 删除匹配）。需要多轮调试的长程序应首次写入 `/workspace/tmp`，之后只发送改动片段并 `run`，避免每轮重发完整程序。`/workspace` 持久保存用户资料，`/workspace/tmp` 启动时清空。工作区脚本不会自动执行；开启 `/auto run on` 后，模型可用 `__workspace run` 直接执行 `.py` 并拿到输出，否则 Harness 会显示源码并要求串口确认。短脚本用前台 `run`；长时间运行的脚本可传 `background=true`（或串口 `/workspace run bg <path>`）创建后台任务。详见 [Workspace](workspace.md)。
+模型通过 `__workspace` 工具读写；`write`/`append`/`replace` 修改文件，`replace` 使用唯一 `match`（`all=true` 可全部替换，空 `content` 删除匹配）。需要多轮调试的长程序应首次写入 `/workspace/tmp`，之后只发送改动片段并 `run`，避免每轮重发完整程序。`/workspace` 持久保存用户资料，`/workspace/tmp` 重启和更新后也保留，需要时用 `/workspace clean` 清空。工作区脚本不会自动执行；开启 `/auto run on` 后，模型可用 `__workspace run` 直接执行 `.py` 并拿到输出，否则 Harness 会显示源码并要求串口确认。短脚本用前台 `run`；长时间运行的脚本可传 `background=true`（或串口 `/workspace run bg <path>`）创建后台任务。详见 [Workspace](workspace.md)。
 
 ## 典型流程
 

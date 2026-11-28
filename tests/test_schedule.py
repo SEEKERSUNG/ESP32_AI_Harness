@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 from harness import clock
 from harness.schedule import (
@@ -198,6 +199,17 @@ class ScheduleTests(unittest.TestCase):
                 "type": "code", "name": "bad", "source": "if:",
                 "when": "once", "delay_s": 30,
             }, self.now)
+
+    def test_code_task_reports_compile_memory_error(self):
+        with mock.patch("harness.executor.compile",
+                        side_effect=MemoryError("allocating 196 bytes"),
+                        create=True):
+            with self.assertRaisesRegex(
+                    ValueError, "compile-time MemoryError"):
+                self.scheduler.create({
+                    "type": "code", "name": "bad", "source": "print('x')",
+                    "when": "once", "delay_s": 30,
+                }, self.now)
 
     def test_rebase_timezone_moves_daily_next_run(self):
         task = self.create_prompt(when="daily", delay_s=None, at="08:00")

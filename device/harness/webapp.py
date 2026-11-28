@@ -595,6 +595,12 @@ class WebApp:
             "question": getattr(agent, "pending_question", None),
             "background": self.app.background_view(),
             "backgrounds": self.app.background_views(result_limit=4096),
+            "background_records": (
+                len(self.app.backgrounds.snapshot())
+                if getattr(self.app, "backgrounds", None) is not None else 0),
+            "background_limit": (
+                self.app.backgrounds.max_records
+                if getattr(self.app, "backgrounds", None) is not None else 0),
             "background_active": bool(self.app.background_active()),
             "schedules": (
                 self.app.schedule_views()
@@ -709,6 +715,10 @@ class WebApp:
             "ap_active": bool(status.get("ap_active")),
             "history": {"messages": usage.get("messages", 0), "chars": usage.get("chars", 0)},
             "max_tokens": self.app.config.get("max_tokens", 32768),
+            "context_tokens": self.app.config.get("context_tokens", 200000),
+            "auto_compact": bool(self.app.config.get("auto_compact", True)),
+            "auto_compact_tokens": self.app.config.get(
+                "auto_compact_tokens", 150000),
             "max_turns": self.app.config.get("max_turns", 32),
             "max_tool_calls": self.app.config.get("max_tool_calls", 16),
             "input_limit": self.app.config.get("input_limit", 2000),
@@ -1103,6 +1113,34 @@ class WebApp:
                     if value < 0 or (key == "max_tokens" and value < 1):
                         raise _error("Invalid %s" % key, 400, "invalid")
                     self.app.config.set(key, value, save=False)
+            if "context_tokens" in body or "auto_compact_tokens" in body:
+                try:
+                    context_limit = int(body.get(
+                        "context_tokens",
+                        self.app.config.get("context_tokens", 200000)))
+                    compact_limit = int(body.get(
+                        "auto_compact_tokens",
+                        self.app.config.get("auto_compact_tokens", 150000)))
+                except (TypeError, ValueError):
+                    raise _error(
+                        "Invalid context token setting", 400, "invalid")
+                if context_limit < 1024 or context_limit > 2000000:
+                    raise _error(
+                        "context_tokens must be 1024-2000000",
+                        400, "invalid")
+                if compact_limit < 1024 or compact_limit >= context_limit:
+                    raise _error(
+                        "auto_compact_tokens must be at least 1024 and below "
+                        "context_tokens", 400, "invalid")
+                if "context_tokens" in body:
+                    self.app.config.set(
+                        "context_tokens", context_limit, save=False)
+                if "auto_compact_tokens" in body:
+                    self.app.config.set(
+                        "auto_compact_tokens", compact_limit, save=False)
+            if "auto_compact" in body:
+                self.app.config.set(
+                    "auto_compact", _boolean(body, "auto_compact"), save=False)
             timeout_fields = (
                 ("max_turns", 1, 50),
                 ("max_tool_calls", 1, 64),

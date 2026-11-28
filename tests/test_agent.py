@@ -1486,6 +1486,28 @@ class AgentTests(unittest.TestCase):
         self.assertIn("will be dropped", result.output)
         self.assertEqual([("requested by model", 5, True)], runner.calls)
 
+    def test_background_tool_can_discard_all_finished(self):
+        class Runner:
+            def __init__(self):
+                self.calls = []
+
+            def background_view(self, job_id=None):
+                return {"id": 0, "phase": "none"}
+
+            def discard_all_backgrounds(self, record=False):
+                self.calls.append(record)
+                return 3
+
+        runner = Runner()
+        executor = Executor(DummyBoard())
+        executor.main_runner = runner
+        agent = Agent(
+            DummyConfig(), FakeLLM(), DummyBoard(), executor=executor)
+        result = agent._run_background_tool({"action": "discard_all"})
+        self.assertTrue(result.ok, result.error)
+        self.assertIn("Discarded 3", result.output)
+        self.assertEqual([True], runner.calls)
+
     def test_background_tool_lists_manages_multiple_jobs(self):
         class Runner:
             def __init__(self):
@@ -1618,6 +1640,63 @@ class AgentTests(unittest.TestCase):
             "action": "start", "source": "if True print(1)"})
         self.assertFalse(result.ok)
         self.assertIn("syntax", result.error)
+
+    def test_background_tool_retries_compile_memory_error(self):
+        class Runner:
+            def __init__(self):
+                self.started = []
+
+            def background_view(self, job_id=None):
+                return {"id": 0, "phase": "none"}
+
+            def start_background_source(self, source, timeout=None, auto=False,
+                                        driver="agent", note=""):
+                self.started.append(source)
+                return {"id": 9, "phase": "running", "timeout": timeout,
+                        "note": note or "task", "auto": auto}
+
+        real_compile = compile
+        calls = []
+
+        def flaky(source, filename, mode):
+            calls.append(1)
+            if len(calls) == 1:
+                raise MemoryError("allocating 196 bytes")
+            return real_compile(source, filename, mode)
+
+        runner = Runner()
+        executor = Executor(DummyBoard())
+        executor.main_runner = runner
+        agent = Agent(DummyConfig(auto_run=True, background_execution=True),
+                      FakeLLM(), DummyBoard(), executor=executor)
+        with mock.patch("harness.executor.compile", side_effect=flaky,
+                        create=True):
+            result = agent._run_background_tool({
+                "action": "start", "source": "print(1)", "timeout": 10})
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(["print(1)"], runner.started)
+        self.assertEqual(2, len(calls))
+
+    def test_background_tool_reports_compile_memory_error(self):
+        class Runner:
+            def background_view(self, job_id=None):
+                return {"id": 0, "phase": "none"}
+
+            def start_background_source(self, *args, **kwargs):
+                raise AssertionError("job must not start")
+
+        executor = Executor(DummyBoard())
+        executor.main_runner = Runner()
+        agent = Agent(DummyConfig(auto_run=True, background_execution=True),
+                      FakeLLM(), DummyBoard(), executor=executor)
+        with mock.patch("harness.executor.compile",
+                        side_effect=MemoryError("allocating 196 bytes"),
+                        create=True):
+            result = agent._run_background_tool({
+                "action": "start", "source": "print(1)", "timeout": 10})
+        self.assertFalse(result.ok)
+        self.assertIn("MemoryError", result.error)
+        self.assertNotIn("syntax", result.error.lower())
 
     def test_background_tool_is_listed_in_prompt(self):
         prompt = builtin_tool_prompt(DummyConfig())

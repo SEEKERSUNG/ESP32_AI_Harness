@@ -100,6 +100,15 @@ class WorkspaceTests(unittest.TestCase):
             self.assertEqual("keep", reloaded.read("keep.txt")["text"])
             self.assertEqual([], reloaded.list("tmp"))
 
+    def test_tmp_survives_reload_by_default(self):
+        with tempfile.TemporaryDirectory() as root:
+            config = DummyConfig()
+            workspace = Workspace(root, config, clean_tmp=False)
+            workspace.write("tmp/reused.py", "print('again')\n")
+            reloaded = Workspace(root, config)
+            self.assertEqual(
+                "print('again')\n", reloaded.read("tmp/reused.py")["text"])
+
     def test_file_and_total_limits(self):
         with tempfile.TemporaryDirectory() as root:
             config = DummyConfig(

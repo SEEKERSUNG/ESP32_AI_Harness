@@ -23,7 +23,7 @@ from .clock import TimeSync
 from .config import Config, join_path, write_text
 from .conversation import BackgroundStore, ConversationStore
 from .device import Board, Network
-from .executor import ExecutionResult, Executor
+from .executor import ExecutionResult, Executor, warm_viper_compiler
 from .http_client import HttpClient
 from .llm import (
     LLMStreamCancelled,
@@ -87,7 +87,7 @@ HELP = """Commands:
   /background stop [ID] Request a cooperative stop (all jobs without ID)
   /background stopdiscard [ID] Stop and drop the result (all jobs without ID)
   /background note ID TEXT  Set a job's short note
-  /background discard ID    Discard a finished job and its result
+  /background discard ID|all Discard one or all finished results
   /schedule             List scheduled tasks
   /schedule status ID   Show one task
   /schedule run ID      Queue a task when the device is idle
@@ -606,6 +606,9 @@ class Application:
         self._content_stream_open = False
         self._reasoning_stream_chars = 0
         self._reasoning_stream_truncated = False
+        # Burn the spurious first viper-emission failure at boot instead of
+        # on the user's first generated script.
+        warm_viper_compiler()
 
     @staticmethod
     def _read_reset_cause():
@@ -2385,15 +2388,31 @@ class Application:
             self.ui.line("Background job #%s note: %s" % (
                 job.get("id"), job.get("note")))
             return
+        if action in ("discardall", "discard-all", "discard_all"):
+            count = self.discard_all_backgrounds(record=True)
+            if count:
+                self.ui.line(
+                    "Discarded %s finished background result(s)." % count)
+            else:
+                self.ui.line("No finished background result to discard.")
+            return
         if action == "discard":
+            if len(args) == 2 and args[1].lower() == "all":
+                count = self.discard_all_backgrounds(record=True)
+                if count:
+                    self.ui.line(
+                        "Discarded %s finished background result(s)." % count)
+                else:
+                    self.ui.line("No finished background result to discard.")
+                return
             if len(args) != 2:
-                raise ValueError("Usage: /background discard ID")
+                raise ValueError("Usage: /background discard ID|all")
             if self.discard_background(record=True, job_id=args[1]):
                 self.ui.line("Background job #%s discarded." % args[1])
             return
         raise ValueError(
             "Usage: /background [list|status ID|stop [ID]|stopdiscard [ID]|"
-            "note ID TEXT|discard ID]")
+            "note ID TEXT|discard ID|all|discardall]")
 
     def schedule_command(self, args):
         action = args[0].lower() if args else "list"

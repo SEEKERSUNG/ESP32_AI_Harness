@@ -14,7 +14,7 @@
 
 ## 看门狗与执行恢复
 
-默认 `watchdog_ms = 30000`。串口等待和网络响应接收期间 Harness 持续喂狗，因此模型生成时间可以超过 30 秒。生成代码执行期间，只有协作式截止钩子（`__harness_check()`、插桩后的 `range()`/所有 `while` 条件、代理后的 `time.sleep()`）会调用 `feed_execution()` 喂狗；不经过这些钩子的代码（如超长非 `range` 的 `for` 循环、单次迭代内长时间阻塞的 C/SPI 调用）仍会停止喂狗。
+默认 `watchdog_ms = 30000`。串口等待和网络响应接收期间 Harness 持续喂狗，因此模型生成时间可以超过 30 秒。生成代码里内联的 `@micropython.viper`/`@micropython.native` 会在设备端 `compile()` 时发射原生代码，从 ESP-IDF 内部堆分配；同一个会话反复编译会留下碎片，可能在 `gc.mem_free()` 仍很大时报 `MemoryError`。这类函数应放进按 `.mpy` 部署的 import 模块，编译期 `MemoryError` 的观察文本会注明编译阶段、脚本未执行以及 GC/内部堆状态。生成代码执行期间，只有协作式截止钩子（`__harness_check()`、插桩后的 `range()`/所有 `while` 条件、代理后的 `time.sleep()`）会调用 `feed_execution()` 喂狗；钩子内部按计数摊还，快路径只做计数比较，喂狗约每 250 ms 一次、停止请求约每 25 ms 轮询一次，循环体变慢时自动恢复为每轮检查；不经过这些钩子的代码（如超长非 `range` 的 `for` 循环、单次迭代内长时间阻塞的 C/SPI 调用、`@micropython.viper`/`@micropython.native` 函数）仍会停止喂狗。
 
 执行前保存：
 
@@ -85,7 +85,7 @@
 - Anthropic/OpenAI 原生搜索通过一次独立的模型 API 请求执行，会按各自的搜索和 token 价格计费；DeepSeek 直连的 `deepseek_web_search` 不单独收取搜索费，按模型 token 计费。Bing 免 Key，但查询会发送到 `cn.bing.com`，默认返回 RSS（失败后 HTML），受 `search_html_limit` 限制。独立的 DeepSeek Search API 和专用 Key 已移除。
 - `auto` 模式会复用当前模型提供方的 `api_key` 访问其原生搜索服务，不需要单独的搜索 Key；OpenCode Go 和其他只提供模型推理的兼容端点使用 Bing。原生搜索失败时会自动回退到 Bing，并在结果中注明；显式 `bing` 不会静默换源。
 - `/workspace` 是共享可写工作区，模型可按用户要求写入持久文件或 tmp；不要在其中保存 Wi-Fi 密码、API Key 等秘密。
-- `/workspace/tmp` 启动时清空；工作区脚本默认只是数据，不会自动执行。`/workspace run` 需要人工确认；`__workspace run` 在 `auto_run` 开启时直接执行，关闭时显示源码并要求串口确认。
+- `/workspace/tmp` 重启和更新后保留，只有 `/workspace clean` 会清空；工作区脚本默认只是数据，不会自动执行。`/workspace run` 需要人工确认；`__workspace run` 在 `auto_run` 开启时直接执行，关闭时显示源码并要求串口确认。
 - 自动模式 `auto_run` 会立即执行生成的 Python，默认关闭，必须由用户在可信会话中显式开启。
 - 自动模式仍不会在启动时执行恢复代码；明显无限循环的代码会被阻止自动执行。
 - 自动模式下，模型在解释中向用户提问并同时返回代码时，Harness 会把“提问 + 代码”作为协议错误要求模型纠正，不会先执行代码；这是保守文本启发式，模型仍可能用其他措辞绕过，不能替代用户审查。

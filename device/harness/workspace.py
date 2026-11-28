@@ -8,14 +8,15 @@ class WorkspaceError(Exception):
 
 
 class Workspace:
-    def __init__(self, root="/", config=None, clean_tmp=None):
+    def __init__(self, root="/", config=None, clean_tmp=False):
         self.config = config
         self.root = join_path(root, "workspace")
         self.tmp = self.root + "/tmp"
         self._mkdir(self.root)
         self._mkdir(self.tmp)
-        if clean_tmp is None:
-            clean_tmp = True if config is None else config.get("workspace_tmp_cleanup", True)
+        # /workspace/tmp survives reboots and deploys: the model often keeps
+        # reusing a stored script across turns. Cleanup is explicit only
+        # (/workspace clean or Workspace(..., clean_tmp=True)).
         if clean_tmp:
             self.clean_tmp()
 

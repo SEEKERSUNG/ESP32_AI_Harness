@@ -272,7 +272,7 @@ SSID:     ESP32-Harness-XXXX
 | `ca.pem` | 部署器自动安装的全量 CA bundle；自定义 CA 可替换 |
 | `MEMORY.md` | 始终加载的项目上下文 |
 | `skills/<name>/SKILL.md` | 显式保存的 Skill 指令包 |
-| `workspace/` | 持久工作区；`workspace/tmp/` 启动时清空 |
+| `workspace/` | 持久工作区；`workspace/tmp/` 重启和更新后同样保留 |
 | `recovery.py` / `recovery.json` | 生成代码执行中的恢复数据 |
 | `maintenance.flag` | 维护模式标志 |
 

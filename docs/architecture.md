@@ -67,10 +67,10 @@ Web 线程和后台 worker 绝不调用 `os.dupterm` 或 `machine.reset`；需�
 
 设备没有精确 tokenizer，因此使用保守近似：ASCII 约 4 字符/token，非 ASCII 约 1 字符/token。估算通过 UTF-8 字节长度在运行时 C 层完成，避免在 ESP32 上逐字符遍历大历史（旧实现会让一次 `/api/status` 耗时约 6 秒）。默认预算：
 
-- `context_tokens=200000`：输入历史、系统提示词和摘要的近似总预算；
+- `context_tokens=200000`：输入历史、系统提示词和摘要的近似总预算，可在网页“设置 → Harness 行为”调整为 1024–2000000；
 - `max_tokens=32768`：为模型输出预留；
 - `history_messages=200`、`history_chars=900000`：额外的内存和消息数量上限；
-- `auto_compact_tokens=150000`：自动压缩阈值；
+- `auto_compact`（默认 true）和 `auto_compact_tokens=150000`：自动压缩开关与阈值，阈值必须小于 `context_tokens`，均可在网页设置调整；
 - `compact_keep_messages=4`：压缩后保留的最近消息数；
 - `summary_char_limit=8192`：摘要最大字符数；
 - `summary_input_chars=120000`：单次摘要请求最多送入的较早消息字符数；
@@ -120,10 +120,11 @@ MCP 调用在模型回合线程执行（串口主线程或 Web 线程）；Web �
 - `range(` 替换为 `__harness_range(`（跳过字符串、注释、`obj.range`、`my_range`）；
 - `while True:` / `while (1):` 替换为 `while __harness_check() or True:`；
 - 其他 `while <条件>:` 替换为 `while __harness_check() or (<条件>):`，扫描时跟踪括号、字符串、注释和 `:=`，避免把切片/字典/lambda 中的冒号当成循环头结束；
+- `@micropython.viper` 和 `@micropython.native` 装饰的函数整体原样复制、不插桩：viper 只接受 int/ptr 局部变量，注入的 `__harness_range`/`__harness_check` 对象会让它报 `ViperTypeError`。`from micropython import viper`（或 `native`，含别名和括号多行写法）之后的裸 `@viper`/`@native` 同样跳过；只在 import 语句实际出现后生效，字符串里的 import 文本不计数。这些函数只需看门狗兜底，和阻塞在 C/SPI 调用中的代码相同；
 - 临时把 `sys.modules["time"]`/`["utime"]` 指向代理对象，拦截 `sleep`/`sleep_ms`/`sleep_us`；
 - `scope` 提供 `__harness_check()`。
 
-每个钩子先检查所在线程的取消标志（后台任务）或全局停止请求，再检查 `ticks_ms` 截止时间；只有主线程的检查会调用 `feed_execution()` 喂狗。停止抛出 `ExecutionCancelled(BaseException)`，超时抛出 `ExecutionTimeout(BaseException)`，避免被生成代码的 `except Exception` 吞掉；执行器捕获后返回 `ExecutionResult(cancelled=True)` 或 `timed_out=True`，观察文本分别为 `status=cancelled`/`status=timeout`，并明确“设备未重启”以及正确的 `timeout=` 写法。`timeout=0`/`infinite` 表示无截止时间。模型应在 python fence 的开围栏同一行写 `timeout=45`；开围栏 info 优先，紧跟在闭合围栏后的独立 `timeout=` 行和代码块首个未再使用的独立 `timeout=N` 行作为兼容形式解析，其他说明文字中的 `timeout=` 不生效。`code_timeout_s` 是默认值，`code_timeout_max_s` 是上限；超时只结束当前 `exec`，先前代码创建的线程仍可能运行。共享 `ExecutionRuntime` 为每个线程维护上下文栈，并临时提供线程级的 `__harness_check`、`print` 和 `time` 路由；因此生成代码通过 `exec(source, separate_globals)` 动态加载 `/workspace` 脚本时仍能协作停止，后台任务之间也不会串输出。最后一个执行结束后恢复所有全局钩子。C/SPI 级阻塞调用、超长非 `range` 的 `for` 循环和单次迭代内长时间阻塞仍由看门狗兜底。
+每个钩子走同一条协作快路径：时钟函数、取消回调和喂狗回调在每次执行开始时只解析一次，快路径只递增一个计数器并和当前窗口比较，未到窗口就直接返回，不分配对象、不做属性查找。到窗口后才读取 `ticks_ms` 检查截止时间、轮询取消标志（约 25 ms 一次）并调用 `feed_execution()` 喂狗（约 250 ms 一次，仅主线程）；窗口按两次慢检查之间的实测时间自适应，快循环放大到最多 32 轮，循环体变慢时立即缩回每轮一次，避免把停止/超时/喂狗延迟放大到几十轮。停止抛出 `ExecutionCancelled(BaseException)`，超时抛出 `ExecutionTimeout(BaseException)`，避免被生成代码的 `except Exception` 吞掉；执行器捕获后返回 `ExecutionResult(cancelled=True)` 或 `timed_out=True`，观察文本分别为 `status=cancelled`/`status=timeout`，并明确“设备未重启”以及正确的 `timeout=` 写法。`timeout=0`/`infinite` 表示无截止时间。模型应在 python fence 的开围栏同一行写 `timeout=45`；开围栏 info 优先，紧跟在闭合围栏后的独立 `timeout=` 行和代码块首个未再使用的独立 `timeout=N` 行作为兼容形式解析，其他说明文字中的 `timeout=` 不生效。`code_timeout_s` 是默认值，`code_timeout_max_s` 是上限；超时只结束当前 `exec`，先前代码创建的线程仍可能运行。共享 `ExecutionRuntime` 为每个线程维护上下文栈，并临时提供线程级的 `__harness_check`、`print` 和 `time` 路由；因此生成代码通过 `exec(source, separate_globals)` 动态加载 `/workspace` 脚本时仍能协作停止，后台任务之间也不会串输出。最后一个执行结束后恢复所有全局钩子。C/SPI 级阻塞调用、超长非 `range` 的 `for` 循环和单次迭代内长时间阻塞仍由看门狗兜底。
 
 ## 硬件外设
 
@@ -133,7 +134,7 @@ MCP 调用在模型回合线程执行（串口主线程或 Web 线程）；Web �
 
 ## Workspace
 
-`/workspace` 是共享持久工作区，`/workspace/tmp` 是启动时清空的临时区。模型通过内置 `__workspace` 工具执行 `summary/list/read/write/mkdir/remove/stat/run`。路径限制在 `/workspace` 内，文件、总量、数量和读取大小都有上限。工作区 `.py` 脚本默认不执行；`__workspace run` 在 `auto_run` 开启时直接执行，否则显示源码并要求串口确认。
+`/workspace` 是共享持久工作区，`/workspace/tmp` 是模型临时区，重启和更新后同样保留（只由 `/workspace clean` 手动清空）。模型通过内置 `__workspace` 工具执行 `summary/list/read/write/mkdir/remove/stat/run`。路径限制在 `/workspace` 内，文件、总量、数量和读取大小都有上限。工作区 `.py` 脚本默认不执行；`__workspace run` 在 `auto_run` 开启时直接执行，否则显示源码并要求串口确认。
 
 ## 一次任务的时序
 

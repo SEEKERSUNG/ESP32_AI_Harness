@@ -207,6 +207,8 @@ INDEX_HTML = r"""<!doctype html>
               <div class="card-head">
                 <h2>后台任务</h2>
                 <p class="hint">后台程序在独立线程运行；完成后可继续对话或丢弃结果。AUTO 模式下设备会自动继续结果。</p>
+                <p id="backgroundQuota" class="hint"></p>
+                <div class="button-row"><button id="backgroundClearBtn" type="button" class="ghost">清空已完成结果</button></div>
               </div>
               <div id="backgroundList" class="background-list"></div>
             </section>
@@ -390,6 +392,9 @@ INDEX_HTML = r"""<!doctype html>
               <label class="field">同时运行的后台程序数（1-4）<input id="cfgBackgroundMax" type="number" min="1" max="4" step="1"></label>
               <label class="field">自动反馈最大轮数（1-50）<input id="cfgMaxTurns" type="number" min="1" max="50" step="1"></label>
               <label class="field">单回合工具调用上限（1-64）<input id="cfgMaxToolCalls" type="number" min="1" max="64" step="1"></label>
+              <label class="field">上下文长度（tokens，1024-2000000）<input id="cfgContextTokens" type="number" min="1024" max="2000000" step="1024"></label>
+              <label class="field">自动压缩阈值（tokens，需小于上下文长度）<input id="cfgAutoCompactTokens" type="number" min="1024" max="2000000" step="1024"></label>
+              <label class="check"><input id="cfgAutoCompact" type="checkbox">启用自动压缩</label>
               <label class="field">NTP 服务器<input id="cfgNtpServer" type="text" maxlength="255" autocomplete="off"></label>
               <label class="field">时区偏移（分钟，UTC+8 = 480）<input id="cfgTimezoneOffset" type="number" min="-720" max="840" step="1"></label>
               <label class="field">自动校时间隔（小时，0 = 仅首次）<input id="cfgNtpIntervalHours" type="number" min="0" max="24" step="1"></label>
@@ -965,6 +970,16 @@ function renderStatusScreen(status){
   setText($('statusTurn'),status.turn_busy?'运行中':'空闲');
   var backgrounds=status.backgrounds||[];
   setText($('statusBackground'),backgrounds.length?backgrounds.length+' 个':'0');
+  var quota=$('backgroundQuota');
+  if(quota&&status.background_records!=null&&status.background_limit!=null){
+    var records=status.background_records, limit=status.background_limit;
+    var finished=backgrounds.filter(function(bg){
+      return bg.phase==='ready'||bg.phase==='error';
+    }).length;
+    setText(quota,'记录 '+records+'/'+limit+' · 已完成 '+finished+' · 空闲 '+
+      Math.max(0,limit-records)+
+      (records>=limit?'（已达上限，请先继续或丢弃部分结果）':''));
+  }
   setText($('statusLive'),status.live&&status.live.active?'接收中':'无');
   setText($('statusVersionShort'),status.version||'-');
 }
@@ -2542,6 +2557,9 @@ function loadConfig(){
     $('cfgBackgroundMax').value=cfg.background_max_jobs||4;
     $('cfgMaxTurns').value=cfg.max_turns||32;
     $('cfgMaxToolCalls').value=cfg.max_tool_calls||16;
+    $('cfgContextTokens').value=cfg.context_tokens||200000;
+    $('cfgAutoCompactTokens').value=cfg.auto_compact_tokens||150000;
+    $('cfgAutoCompact').checked=cfg.auto_compact!==false;
     $('cfgNtpServer').value=cfg.ntp_server||'pool.ntp.org';
     $('cfgTimezoneOffset').value=cfg.timezone_offset_minutes==null?480:cfg.timezone_offset_minutes;
     $('cfgNtpIntervalHours').value=Math.round((cfg.ntp_sync_interval_s==null?21600:cfg.ntp_sync_interval_s)/3600*100)/100;
@@ -2732,12 +2750,19 @@ document.addEventListener('DOMContentLoaded',function(){
     if(!isFinite(tzOffset)||tzOffset< -720||tzOffset>840){toast('时区偏移需为 -720 到 840 分钟');return;}
     var toolCalls=parseInt($('cfgMaxToolCalls').value,10);
     if(!isFinite(toolCalls)||toolCalls<1||toolCalls>64){toast('工具调用上限需为 1-64');return;}
+    var contextTokens=parseInt($('cfgContextTokens').value,10);
+    if(!isFinite(contextTokens)||contextTokens<1024||contextTokens>2000000){toast('上下文长度需为 1024-2000000');return;}
+    var compactTokens=parseInt($('cfgAutoCompactTokens').value,10);
+    if(!isFinite(compactTokens)||compactTokens<1024||compactTokens>=contextTokens){toast('自动压缩阈值需不小于 1024 且小于上下文长度');return;}
     post('/api/config',{
       show_thinking:$('cfgShowThinking').checked,
       background_execution:$('cfgBackground').checked,
       background_max_jobs:parseInt($('cfgBackgroundMax').value,10)||4,
       max_turns:parseInt($('cfgMaxTurns').value,10)||32,
       max_tool_calls:parseInt($('cfgMaxToolCalls').value,10)||16,
+      context_tokens:contextTokens,
+      auto_compact_tokens:compactTokens,
+      auto_compact:$('cfgAutoCompact').checked,
       persist_conversation:$('cfgPersistConversation').checked,
       ntp_server:$('cfgNtpServer').value.trim(),
       timezone_offset_minutes:tzOffset,
@@ -2800,6 +2825,13 @@ document.addEventListener('DOMContentLoaded',function(){
   };
   $('scheduleType').onchange=syncScheduleForm;
   $('scheduleWhen').onchange=syncScheduleForm;
+  $('backgroundClearBtn').onclick=function(){
+    if(!confirm('丢弃所有已完成的后台结果？正在运行或排队的任务不受影响。'))return;
+    post('/api/background/discard',{all:true}).then(function(res){
+      toast('已丢弃 '+((res&&res.discarded)||0)+' 个结果');
+      refreshStatus();
+    }).catch(function(e){toast(e.message);});
+  };
   $('scheduleSaveBtn').onclick=saveSchedule;
   $('scheduleCancelBtn').onclick=function(){resetScheduleForm(true);};
   $('fileUpBtn').onclick=function(){

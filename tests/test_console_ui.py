@@ -923,6 +923,20 @@ class ApplicationBackgroundTests(unittest.TestCase):
         self.assertTrue(app.discard_background(job_id=job["id"]))
         self.assertIsNone(app.background)
 
+    def test_discard_all_finished_from_serial_command(self):
+        app = self.make_app()
+        app.ui = FakeSerialUI()
+        app.agent.pending_source = "one"
+        first = app.start_background(auto=False, driver="web")
+        app.agent.pending_source = "two"
+        second = app.start_background(auto=False, driver="web")
+        self.wait_phase(first, "ready")
+        self.wait_phase(second, "ready")
+        app.background_command(["discard", "all"])
+        self.assertEqual([], app.background_views())
+        self.assertTrue(
+            any("Discarded 2" in line for line in app.ui.lines))
+
     def test_prepare_for_new_turn_commits_all_ready_results(self):
         app = self.make_app()
         first = app.start_background(auto=False, driver="web")

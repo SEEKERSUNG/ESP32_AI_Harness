@@ -360,8 +360,17 @@ class BackgroundPoolTests(unittest.TestCase):
         self.assertIn("dashboard", lines)
         self.assertIn("elapsed=", lines)
         self.assertIn("timeout=infinite", lines)
+        self.assertIn("records 1/%s" % pool.max_records, lines)
+        self.assertIn("finished 0", lines)
+        self.assertIn("%s slots free" % (pool.max_records - 1), lines)
         self.release["wait-summary"].set()
         self.wait_phase(job, "ready")
+
+    def test_summary_shows_quota_when_empty(self):
+        pool = self.make_pool()
+        lines = "\n".join(pool.summary_lines())
+        self.assertIn("records 0/%s" % pool.max_records, lines)
+        self.assertIn("%s slots free" % pool.max_records, lines)
 
     def test_max_records_prunes_errors_but_refuses_to_drop_ready(self):
         pool = self.make_pool(background_max_jobs=4, background_max_records=2)
@@ -369,8 +378,28 @@ class BackgroundPoolTests(unittest.TestCase):
         second = pool.create("two", 0)
         self.wait_phase(first, "ready")
         self.wait_phase(second, "ready")
-        with self.assertRaises(RuntimeError):
+        with self.assertRaises(RuntimeError) as raised:
             pool.create("third", 0)
+        message = str(raised.exception)
+        self.assertIn("records 2/2, finished 2", message)
+        self.assertIn("discard at least 1 finished result(s)", message)
+
+    def test_max_records_message_distinguishes_active_jobs(self):
+        pool = self.make_pool(background_max_jobs=4, background_max_records=2)
+        self.release["slow-a"] = threading.Event()
+        self.release["slow-b"] = threading.Event()
+        first = pool.create("slow-a", 0)
+        second = pool.create("slow-b", 0)
+        self.assertEqual("running", first["phase"])
+        with self.assertRaises(RuntimeError) as raised:
+            pool.create("third", 0)
+        message = str(raised.exception)
+        self.assertIn("records 2/2, finished 0", message)
+        self.assertIn("wait for a running job", message)
+        self.release["slow-a"].set()
+        self.release["slow-b"].set()
+        self.wait_phase(first, "ready")
+        self.wait_phase(second, "ready")
 
     def test_restore_marks_interrupted_jobs_as_error(self):
         root = tempfile.mkdtemp()
