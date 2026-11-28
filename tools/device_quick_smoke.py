@@ -338,6 +338,13 @@ def run():
     # cached sys.modules entry used to keep executing the old bytecode.
     cache_name = "harness_cache_smoke"
     cache_path = "/workspace/tmp/" + cache_name + ".py"
+    # A freshly flashed board has no user workspace until the application
+    # boots, so create the container directories this check writes into.
+    for directory in ("/workspace", "/workspace/tmp"):
+        try:
+            os.mkdir(directory)
+        except OSError:
+            pass
     sys.path.append("/workspace/tmp")
     try:
         with open(cache_path, "w") as handle:

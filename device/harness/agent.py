@@ -545,9 +545,10 @@ def system_prompt(config, board, workspace=False):
     background_note = ""
     if config.get("background_execution", True):
         background_note = (
-            "Prefer foreground execution for short program tasks. Use background "
-            "only when the task is long-running, must continue while the user "
-            "does other work, or the user explicitly asks for it; briefly say why. "
+            "Use foreground execution by default. Start a background job only "
+            "when the user explicitly asks for background execution; a task "
+            "being long-running is not enough on its own. Briefly say why when "
+            "you do use it. "
             "The harness can run confirmed code as one or more background jobs on "
             "worker threads, while the conversation and foreground code continue. "
             "Each job ends its turn before it finishes; a later observation "
@@ -564,7 +565,10 @@ def system_prompt(config, board, workspace=False):
             "emit the same code block. Background output is captured from print(); "
             "direct sys.stdout writes may be missing. Multiple jobs share the "
             "device: avoid unsynchronized file writes and do not drive the same "
-            "peripheral or bus from concurrent jobs. A cancelled/stopped job "
+            "peripheral or bus from concurrent jobs. When the user asks to stop a "
+            "job, prefer stop_discard unless you still need its output: a plain "
+            "stop still delivers a result a few seconds later and starts another "
+            "continuation turn. A cancelled/stopped job "
             "was stopped deliberately: do not restart it automatically unless "
             "the user explicitly asks; report the stop instead. "
         )
@@ -1168,11 +1172,12 @@ def native_tool_definitions(config, skills=None, workspace=None, memory=None,
         ),
         _tool_schema(
             "__background",
-            "Manage background code jobs. Prefer foreground for short tasks; "
-            "use action=start only for long-running work or when the user asks "
-            "for background. In AUTO mode it runs MicroPython source on a worker "
+            "Manage background code jobs. Use foreground execution by default; "
+            "use action=start only when the user explicitly asks for background "
+            "execution. In AUTO mode it runs MicroPython source on a worker "
             "thread; outside AUTO mode return a python block for confirmation "
-            "instead. stop is cooperative; stop_discard also drops the result.",
+            "instead. stop is cooperative and still delivers a result shortly "
+            "afterwards; prefer stop_discard when you do not need that output.",
             {
                 "action": {
                     "type": "string",
@@ -1325,7 +1330,7 @@ def native_tool_definitions(config, skills=None, workspace=None, memory=None,
                 "overwrite": {"type": "boolean"},
                 "background": {
                     "type": "boolean",
-                    "description": "For action=run: run as a background job.",
+                    "description": "For action=run: run as a background job; use only when the user explicitly asks for background.",
                 },
                 "timeout": {
                     "type": "integer",
@@ -1379,11 +1384,13 @@ def _native_tool_prompt(config, skills=None, workspace=None, memory=None):
         "UTC offset. Use __time action=set only when the user explicitly asks "
         "to change the clock, and action=timezone to change the display "
         "timezone; never write local time into the UTC RTC.",
-        "Prefer foreground execution for short program tasks. Use background only "
-        "when the task is long-running, must continue while the user does other "
-        "work, or the user explicitly asks for it; briefly say why. Background jobs "
-        "run on worker threads. Use the __background tool to list, inspect, rename, "
-        "discard or cooperatively stop jobs; stop_discard stops and drops the result. "
+        "Use foreground execution by default; start a background job only when "
+        "the user explicitly asks for background execution, and briefly say why. "
+        "Background jobs run on worker threads. Use the __background tool to list, "
+        "inspect, rename, discard or cooperatively stop jobs. When you stop a job, "
+        "prefer stop_discard unless you still need its output, because a plain stop "
+        "still delivers a result shortly afterwards and starts another "
+        "continuation turn. "
         "In AUTO mode you may start source with "
         "action=start; otherwise return a normal python block for confirmation. Do "
         "not both start a job and emit the same code block. __workspace action=run "
@@ -1519,9 +1526,8 @@ def builtin_tool_prompt(config, skills=None, workspace=None, memory=None):
             "return a normal python code block for user confirmation."
         )
     lines.extend([
-        "Prefer foreground execution for short program tasks. Use background only "
-        "when the task is long-running, must continue while the user does other "
-        "work, or the user explicitly asks for it; briefly say why. Do not start "
+        "Use foreground execution by default. Start a background job only when the "
+        "user explicitly asks for background execution; do not start "
         "a background job for a task that finishes in one foreground execution. "
         "Multiple background jobs may run at the same time and the "
         "user may also run foreground code. Use list when the user asks what is "
@@ -1529,9 +1535,11 @@ def builtin_tool_prompt(config, skills=None, workspace=None, memory=None):
         "Stop is cooperative: it takes effect at the next __harness_check(), "
         "instrumented range loop, while condition or time.sleep() checkpoint; "
         "code blocked in a C/SPI call may not stop until the watchdog. Never claim "
-        "an immediate hard kill. stop_discard also drops the result so it cannot "
-        "be continued; use it only when the user asks to stop and discard. "
-        "Discard only finished jobs and only after the user asks.",
+        "an immediate hard kill. A plain stop still delivers the job's result a few "
+        "seconds later, which starts another continuation turn, so prefer "
+        "stop_discard when you do not need that output; use a plain stop only when "
+        "the result still matters. Discard only finished jobs and only after the "
+        "user asks.",
         "\n\nScheduled tasks (always available):",
         '- list: ```tool {"name":"__schedule","args":{"action":"list"}}```',
         '- status: ```tool {"name":"__schedule","args":{"action":"get","id":1}}```',
@@ -1622,7 +1630,7 @@ def builtin_tool_prompt(config, skills=None, workspace=None, memory=None):
             '- replace: ```tool {"name":"__workspace","args":{"action":"replace","path":"tmp/script.py","match":"old text","content":"new text"}}``` (match must be unique unless all=true; empty content deletes it)',
             '- mkdir/remove/stat: use the same action/path fields.',
             '- run: ```tool {"name":"__workspace","args":{"action":"run","path":"tmp/script.py","timeout":30}}``` (asks for confirmation unless /auto run on; timeout is optional)',
-            '- run in background: ```tool {"name":"__workspace","args":{"action":"run","path":"tmp/script.py","background":true,"timeout":120}}``` (for long-running scripts; returns a background job id)',
+            '- run in background: ```tool {"name":"__workspace","args":{"action":"run","path":"tmp/script.py","background":true,"timeout":120}}``` (only when the user explicitly asks for background; returns a background job id)',
             "For a program that needs several debug cycles, write it once to "
             "/workspace/tmp and use replace/append instead of resending the whole "
             "file on every repair.",
