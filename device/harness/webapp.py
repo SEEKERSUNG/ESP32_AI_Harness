@@ -832,6 +832,9 @@ class WebApp:
             if path == "/api/rewind" and req.method == "POST":
                 self._rewind(req, writer)
                 return
+            if path == "/api/stop" and req.method == "POST":
+                self._stop_turn(req, writer)
+                return
             if path == "/api/chat" and req.method == "POST":
                 self._chat(req, writer)
                 return
@@ -1570,6 +1573,25 @@ class WebApp:
             })
         finally:
             self.app.end_operation()
+
+    def _stop_turn(self, req, writer):
+        """Ask a main-thread turn (serial/AUTO/schedule) to stop.
+
+        The browser's own /api/chat stream is stopped by aborting its request;
+        this endpoint covers turns the page is only observing, so the chat
+        stop button also works after a refresh or during an AUTO continuation.
+        """
+        requested = self.app.request_turn_stop()
+        writer.send_json(200, {
+            "ok": True,
+            "stop_requested": bool(requested),
+            "busy_source": self.app.busy_source,
+            "message": (
+                "Stop requested; the device applies it at the next network "
+                "checkpoint."
+                if requested else "No stoppable agent turn is running."
+            ),
+        })
 
     def _stop_background(self, req, writer):
         body = self._json(req)

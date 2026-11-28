@@ -316,7 +316,7 @@ GPIO 26–37（Flash/PSRAM）、43/44（控制台 UART）、19/20（原生 USB�
 | `/workspace remove <path>` | 删除文件/空目录（确认） |
 | `/workspace clean` | 清空 `/workspace/tmp`（确认） |
 
-模型通过 `__workspace` 工具读写；`/workspace` 持久保存用户资料，`/workspace/tmp` 启动时清空。工作区脚本不会自动执行；开启 `/auto run on` 后，模型可用 `__workspace run` 直接执行 `.py` 并拿到输出，否则 Harness 会显示源码并要求串口确认。短脚本用前台 `run`；长时间运行的脚本可传 `background=true`（或串口 `/workspace run bg <path>`）创建后台任务。详见 [Workspace](workspace.md)。
+模型通过 `__workspace` 工具读写；`write`/`append`/`replace` 修改文件，`replace` 使用唯一 `match`（`all=true` 可全部替换，空 `content` 删除匹配）。需要多轮调试的长程序应首次写入 `/workspace/tmp`，之后只发送改动片段并 `run`，避免每轮重发完整程序。`/workspace` 持久保存用户资料，`/workspace/tmp` 启动时清空。工作区脚本不会自动执行；开启 `/auto run on` 后，模型可用 `__workspace run` 直接执行 `.py` 并拿到输出，否则 Harness 会显示源码并要求串口确认。短脚本用前台 `run`；长时间运行的脚本可传 `background=true`（或串口 `/workspace run bg <path>`）创建后台任务。详见 [Workspace](workspace.md)。
 
 ## 典型流程
 

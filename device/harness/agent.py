@@ -565,16 +565,21 @@ def system_prompt(config, board, workspace=False):
         workspace_note = (
             "The device persists user files under /workspace. When the user asks "
             "to list, read, inspect or edit workspace files, use the __workspace "
-            "built-in tool (summary/list/read/write/mkdir/remove/stat/run). Do not "
-            "return Python that imports os and calls listdir/open/stat just to "
-            "browse or display /workspace; that wastes a device execution turn. "
-            "Generated code may access workspace files only when the task truly "
-            "needs computation over their contents. "
+            "built-in tool (summary/list/read/write/append/replace/mkdir/remove/"
+            "stat/run). Do not return Python that imports os and calls listdir/"
+            "open/stat just to browse or display /workspace; that wastes a device "
+            "execution turn. For a nontrivial program that needs several debug "
+            "cycles, write the first version to /workspace/tmp/<name>.py once, then "
+            "use read/replace/append and run; this avoids resending the whole "
+            "program in every reply. /workspace/tmp is AI scratch space and may be "
+            "cleared on boot; keep user files outside tmp. Generated code may "
+            "access workspace files only when the task truly needs computation "
+            "over their contents. "
         )
     return (
         "You are the cloud reasoning component of an agent whose complete harness runs on an ESP32-S3 N16R8. "
         "The device runs MicroPython 1.29, not CPython. Return normal explanations as text. "
-        "When device execution is needed, return exactly one ```python code block. "
+        "When one-shot device execution is needed, return exactly one ```python code block. "
         "Use a python fence only for complete code that should run now; for examples, "
         "fragments, pseudocode or output illustrations, use a ```text block instead, "
         "because every python fence is treated as executable code. "
@@ -1274,18 +1279,31 @@ def native_tool_definitions(config, skills=None, workspace=None, memory=None,
         tools.append(_tool_schema(
             "__workspace",
             "Read, write or inspect /workspace. Use this instead of generating "
-            "os/listdir/open code to browse workspace files. `write` and `run` "
-            "are separate calls: write stores content, run executes an existing "
-            "file and never writes it. Write first, then run.",
+            "os/listdir/open code to browse workspace files. `write`, `append` "
+            "and `replace` update a stored file; `run` executes an existing .py "
+            "file and never writes it. For a longer program that needs several "
+            "debug cycles, write it once to /workspace/tmp and use append/replace "
+            "for later edits so the whole program is not resent every turn. "
+            "Write first, then run.",
             {
                 "action": {
                     "type": "string",
-                    "enum": ["summary", "list", "read", "write", "mkdir", "remove", "stat", "run"],
+                    "enum": ["summary", "list", "read", "write", "append",
+                             "replace", "mkdir", "remove", "stat", "run"],
                 },
                 "path": {"type": "string", "description": "Path relative to /workspace."},
                 "content": {
                     "type": "string",
-                    "description": "Content for action=write. Run ignores it; call write first.",
+                    "description": "Content for write/append, or replacement text "
+                                   "for replace (empty deletes the match).",
+                },
+                "match": {
+                    "type": "string",
+                    "description": "Exact text to replace for action=replace.",
+                },
+                "all": {
+                    "type": "boolean",
+                    "description": "For replace: replace every match instead of requiring exactly one.",
                 },
                 "overwrite": {"type": "boolean"},
                 "background": {
@@ -1421,6 +1439,11 @@ def _native_tool_prompt(config, skills=None, workspace=None, memory=None):
             "Use __workspace for workspace listing, reading, writing and inspection. "
             "Do not generate os/listdir/open code just to browse /workspace; a python "
             "block is appropriate only when computation over file contents is needed.",
+            "For a longer program that needs several debug cycles, write the first "
+            "version to /workspace/tmp once, then use append/replace for later edits "
+            "and run the stored file; only the changed fragment is sent instead of "
+            "the whole program. Do not also return a python block for the same "
+            "version.",
             "/workspace is persistent user data; /workspace/tmp is AI scratch space "
             "and may be cleared on boot. action=run asks for confirmation unless "
             "AUTO mode is enabled.",
@@ -1577,9 +1600,14 @@ def builtin_tool_prompt(config, skills=None, workspace=None, memory=None):
             '- list: ```tool {"name":"__workspace","args":{"action":"list","path":""}}```',
             '- read: ```tool {"name":"__workspace","args":{"action":"read","path":"notes.txt"}}```',
             '- write: ```tool {"name":"__workspace","args":{"action":"write","path":"tmp/data.txt","content":"..."}}```',
+            '- append: ```tool {"name":"__workspace","args":{"action":"append","path":"tmp/script.py","content":"..."}}```',
+            '- replace: ```tool {"name":"__workspace","args":{"action":"replace","path":"tmp/script.py","match":"old text","content":"new text"}}``` (match must be unique unless all=true; empty content deletes it)',
             '- mkdir/remove/stat: use the same action/path fields.',
             '- run: ```tool {"name":"__workspace","args":{"action":"run","path":"tmp/script.py","timeout":30}}``` (asks for confirmation unless /auto run on; timeout is optional)',
             '- run in background: ```tool {"name":"__workspace","args":{"action":"run","path":"tmp/script.py","background":true,"timeout":120}}``` (for long-running scripts; returns a background job id)',
+            "For a program that needs several debug cycles, write it once to "
+            "/workspace/tmp and use replace/append instead of resending the whole "
+            "file on every repair.",
             "Generated code may import machine, esp, esp32, neopixel and "
             "framebuf and use the standard MicroPython hardware classes "
             "directly. There is no api object, peripheral allowlist or "
@@ -4096,6 +4124,37 @@ class Agent:
                 return ToolResult(
                     True, "Wrote %s (%s chars)." % (result["path"], result["chars"]), "", 0
                 )
+            if action == "append":
+                path = args.get("path")
+                if not path:
+                    raise WorkspaceError("path is required")
+                if "content" not in args:
+                    raise WorkspaceError("content is required")
+                result = self.workspace.append(path, args["content"])
+                return ToolResult(
+                    True, "Appended to %s (%s chars)." % (
+                        result["path"], result["chars"]), "", 0
+                )
+            if action == "replace":
+                path = args.get("path")
+                if not path:
+                    raise WorkspaceError("path is required")
+                match = args.get("match")
+                if not match:
+                    raise WorkspaceError("match is required for action=replace")
+                if "content" not in args:
+                    raise WorkspaceError("content is required")
+                all_values = args.get("all", False)
+                if isinstance(all_values, str):
+                    all_values = all_values.strip().lower() in (
+                        "1", "true", "yes", "on", "all")
+                result = self.workspace.replace(
+                    path, match, args["content"], all=bool(all_values))
+                return ToolResult(
+                    True, "Replaced %s occurrence(s) in %s (%s chars)." % (
+                        result["occurrences"], result["path"],
+                        result["chars"]), "", 0
+                )
             if action == "mkdir":
                 path = args.get("path")
                 if not path:
@@ -4241,7 +4300,8 @@ class Agent:
                 )
             return ToolResult(
                 False, "",
-                "Usage: action=summary|list|read|write|mkdir|remove|stat|run",
+                "Usage: action=summary|list|read|write|append|replace|"
+                "mkdir|remove|stat|run",
                 0,
             )
         except Exception as exc:

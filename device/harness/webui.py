@@ -567,7 +567,7 @@ details.reasoning pre,details.collapsible pre{max-height:240px;overflow:auto;whi
 """
 
 APP_JS = r"""'use strict';
-var state = {status:null, config:null, mcp:null, streaming:false, current:null, reasoning:null, reasoningChars:0, setup:false, setupInfo:null, authed:false, pendingKey:null, pendingEl:null, lastWifiError:'', activeStream:null, behaviorSaving:false, historyLoaded:false, backgroundKey:null, backgroundEl:null, backgroundPhase:null, backgroundTimer:null, backgroundResuming:false, autoContinueSeq:null, autoBusyNotice:false, liveUserEl:null, liveSeq:null, liveContent:'', liveReasoning:'', liveEventIndex:0, liveTimer:null, livePolling:false, liveGen:0, turnEl:null, turnCard:null, turnSteps:null, scheduleKey:null, scheduleEditId:null, scheduleSeq:null};
+var state = {status:null, config:null, mcp:null, streaming:false, deviceBusy:false, stopWaiting:false, current:null, reasoning:null, reasoningChars:0, setup:false, setupInfo:null, authed:false, pendingKey:null, pendingEl:null, pendingCode:null, runningCode:null, consumedCodes:[], answeredQuestion:null, lastWifiError:'', activeStream:null, behaviorSaving:false, historyLoaded:false, backgroundKey:null, backgroundEl:null, backgroundPhase:null, backgroundTimer:null, backgroundResuming:false, autoContinueSeq:null, autoBusyNotice:false, liveUserEl:null, liveSeq:null, liveContent:'', liveReasoning:'', liveEventIndex:0, liveTimer:null, livePolling:false, liveGen:0, turnEl:null, turnCard:null, turnSteps:null, scheduleKey:null, scheduleEditId:null, scheduleSeq:null};
 function $(id){return document.getElementById(id);}
 function setText(el,text){el.textContent = text == null ? '' : String(text);}
 function show(el, yes){el.hidden = !yes;}
@@ -792,9 +792,14 @@ function changeAuto(enable){
     return false;
   });
 }
+function syncStopButton(){
+  // A device-owned turn (AUTO continuation or scheduled task) is not backed
+  // by a local fetch, but it is still stoppable from this page.
+  show($('stopBtn'), !!(state.streaming||state.deviceBusy)&&!state.stopWaiting);
+}
 function setBusy(busy){
   state.streaming=busy; $('sendBtn').disabled=busy; $('chatInput').disabled=busy;
-  show($('stopBtn'), busy);
+  syncStopButton();
   syncBehaviorDisabled();
   ['refreshBtn','historyBtn','clearBtn','compactBtn','testWifiBtn','testApiBtn'].forEach(function(id){
     var el=$(id); if(el) el.disabled=busy;
@@ -802,6 +807,8 @@ function setBusy(busy){
 }
 function renderStatus(status){
   state.status=status;
+  state.deviceBusy=!!(status.turn_busy||(status.live&&status.live.active));
+  syncStopButton();
   var mode=status.mode || 'off';
   var ip=status.sta_ip || status.ap_ip || '-';
   var apNote='';
@@ -859,9 +866,40 @@ function renderStatus(status){
     }
   }
 }
+function questionKey(ev){
+  return (ev.header||'')+'\n'+(ev.question||'');
+}
+function codeConsumed(source){
+  var key=String(source||'');
+  for(var i=0;i<state.consumedCodes.length;i++){
+    if(state.consumedCodes[i]===key) return true;
+  }
+  return false;
+}
+function markCodeConsumed(source){
+  var key=String(source||'');
+  if(!key||codeConsumed(key)) return;
+  state.consumedCodes.push(key);
+  if(state.consumedCodes.length>8) state.consumedCodes.shift();
+}
+function unmarkCodeConsumed(source){
+  var key=String(source||'');
+  var kept=[];
+  for(var i=0;i<state.consumedCodes.length;i++){
+    if(state.consumedCodes[i]!==key) kept.push(state.consumedCodes[i]);
+  }
+  state.consumedCodes=kept;
+}
 function maybeShowPending(status){
+  // A status snapshot may have been requested before the current action. The
+  // turn's own events are authoritative while it streams; a late snapshot
+  // must not insert a dead card into the new bubble.
+  if(state.streaming) return;
   var q=status&&status.question;
   if(q&&q.question){
+    // A status response issued before the user answered can land after the
+    // next turn has already started. Never redraw an answered question.
+    if(state.answeredQuestion===questionKey(q)) return;
     var attached=state.pendingEl && document.body.contains(state.pendingEl);
     if(state.pendingKey!=='question' || !attached) renderQuestion(q);
     return;
@@ -869,6 +907,9 @@ function maybeShowPending(status){
   var p=status&&status.pending;
   if(!p||!p.kind||p.kind==='none') return;
   if(p.kind==='code'&&p.code){
+    // The code was already run/discarded here; a stale pending snapshot must
+    // not recreate a card whose Run buttons can only fail.
+    if(codeConsumed(p.code)) return;
     if(state.pendingKey!=='code'){state.pendingKey='code';renderCode({source:p.code,safe:p.safe,auto:false,timeout_s:p.timeout_s});}
     return;
   }
@@ -1415,7 +1456,7 @@ function refreshHistory(){
   if(state.streaming) return Promise.resolve();
   stopLivePoll(); state.liveSeq=null; state.liveContent=''; state.liveReasoning=''; state.liveEventIndex=0;
   return api('/api/history?limit=200').then(function(data){
-    $('chatLog').innerHTML=''; state.current=null; state.reasoning=null; state.reasoningChars=0; state.pendingKey=null; state.pendingEl=null; state.liveUserEl=null;
+    $('chatLog').innerHTML=''; state.current=null; state.reasoning=null; state.reasoningChars=0; state.pendingKey=null; state.pendingEl=null; state.pendingCode=null; state.liveUserEl=null;
     state.turnEl=null; state.turnCard=null; state.turnSteps=null;
     state.backgroundEl=null; state.backgroundKey=null; state.backgroundPhase=null;
     function renderObservation(content){
@@ -1470,7 +1511,9 @@ function refreshHistory(){
       logMessage('system','部分消息在网页视图中被截断（每条最多 8192 字符）；完整内容请用串口 /history。','system');
     }
     state.historyLoaded=true;
-    if(state.status){maybeShowPending(state.status);syncBackground(state.status);}
+    // Restore pending cards from a fresh snapshot, not a status that may be
+    // older than the actions that produced this history.
+    refreshStatus().catch(function(){});
     autoScrollChat(true);
   }).catch(function(err){if(err.status===401)showLogin();throw err;});
 }
@@ -1553,6 +1596,7 @@ function handleEvent(ev){
   }
   if(ev.t==='done'){
     state.current=null;
+    state.runningCode=null;
     if(state.liveUserEl){attachRewindButton(state.liveUserEl,ev.user_index);state.liveUserEl=null;}
     if(ev.pending && ev.pending!=='none' && ev.pending!=='question') logMessage('system','有待处理项: '+ev.pending,'system');
     return;
@@ -1565,33 +1609,64 @@ function card(title){
   var h=document.createElement('h4'); h.textContent=title; el.appendChild(h);
   ensureTurnCard().appendChild(el); updateEmptyState(); scrollIfStick(stick); return el;
 }
+function disableCodeCards(){
+  var cards=document.querySelectorAll('.code-card');
+  for(var i=0;i<cards.length;i++){
+    var actions=cards[i].querySelector('.actions');
+    if(actions) actions.remove();
+  }
+  if(state.pendingKey==='code'){state.pendingKey=null;state.pendingEl=null;}
+  state.pendingCode=null;
+}
+function removeCodeCards(source){
+  var cards=document.querySelectorAll('.code-card');
+  for(var i=0;i<cards.length;i++){
+    if(cards[i]._codeSource===source) cards[i].remove();
+  }
+}
 function renderCode(ev){
   var runnable=ev.runnable!==false;
+  var source=ev.source||'';
   var title=runnable?(ev.auto?'代码（自动模式）':('待执行代码'+(ev.safe===false?'（检测到明显无限循环，需手动运行）':''))):'代码未调度';
   if(ev.timeout_s!=null) title+=' · 超时 '+(ev.timeout_s===0?'∞':ev.timeout_s+'s');
   var el=card(title);
-  var source=ev.source||'';
+  el.classList.add('code-card');
+  el._codeSource=source;
+  state.pendingCode=null;
   el.appendChild(collapsibleBlock('查看代码（'+source.length+' 字符）',source,false));
   if(!runnable){var blocked=document.createElement('p');blocked.className='hint';blocked.textContent='这段代码没有排入执行；可以让助手重新生成，或直接在下方输入新消息。';el.appendChild(blocked);return;}
   if(ev.auto){var note=document.createElement('p');note.className='hint';note.textContent='自动模式已开启，代码已提交执行。';el.appendChild(note);return;}
-  state.pendingKey='code'; state.pendingEl=el;
+  state.pendingKey='code'; state.pendingEl=el; state.pendingCode=source;
   var actions=document.createElement('div'); actions.className='actions';
   var backgroundEnabled=!(state.status&&state.status.auto&&state.status.auto.background===false);
   if(ev.timeout_s!==0){
-    var run=document.createElement('button'); run.textContent='前台运行'; run.onclick=function(){runPending('foreground');};
+    var run=document.createElement('button'); run.textContent='前台运行'; run.onclick=function(){runPending('foreground',source);};
     actions.appendChild(run);
   }
   if(backgroundEnabled){
     var bgRun=document.createElement('button'); bgRun.type='button'; bgRun.textContent='后台运行';
-    bgRun.onclick=function(){runPending('background');};
+    bgRun.onclick=function(){runPending('background',source);};
     actions.appendChild(bgRun);
   }
-  var discard=document.createElement('button'); discard.className='ghost'; discard.textContent='丢弃'; discard.onclick=function(){post('/api/discard',{}).then(function(){state.pendingKey=null;state.pendingEl=null;el.remove();toast('已丢弃');refreshStatus().catch(function(){});}).catch(function(e){toast(e.message);});};
+  var discard=document.createElement('button'); discard.className='ghost'; discard.textContent='丢弃';
+  discard.onclick=function(){
+    markCodeConsumed(source);
+    post('/api/discard',{}).then(function(){
+      removeCodeCards(source);
+      state.pendingKey=null; state.pendingEl=null; state.pendingCode=null;
+      toast('已丢弃');
+      refreshStatus().catch(function(){});
+    }).catch(function(e){toast(e.message);});
+  };
   actions.appendChild(discard); el.appendChild(actions);
 }
 function renderQuestion(ev){
   var el=card('模型提问: '+(ev.header||'问题'));
   el.classList.add('question-card');
+  el._questionKey=questionKey(ev);
+  // A fresh question event is answerable even when its text matches an
+  // earlier question that was already answered.
+  state.answeredQuestion=null;
   var text=document.createElement('p'); text.className='question-text'; text.textContent=ev.question||''; el.appendChild(text);
   var options=ev.options||[];
   if(options.length){
@@ -1634,6 +1709,7 @@ function disableQuestions(){
   var cards=document.querySelectorAll('.question-card');
   for(var i=0;i<cards.length;i++){
     cards[i].classList.add('answered');
+    if(cards[i]._questionKey) state.answeredQuestion=cards[i]._questionKey;
     var buttons=cards[i].querySelectorAll('button');
     for(var j=0;j<buttons.length;j++) buttons[j].disabled=true;
   }
@@ -1658,6 +1734,7 @@ function renderProposal(ev){
   actions.appendChild(save); actions.appendChild(discard); el.appendChild(actions);
 }
 function stream(path, value){
+  state.stopWaiting=false;
   setBusy(true); state.current=null; state.reasoning=null; state.reasoningChars=0;
   var controller=null;
   try{controller=new AbortController();}catch(e){}
@@ -1702,9 +1779,27 @@ function stream(path, value){
       return;
     }
     state.activeStream=null;
+    state.stopWaiting=false;
+    // The answer never reached the device: allow the still-pending question
+    // card to be restored by the next status poll.
+    state.answeredQuestion=null;
+    var staleCode=String(err.message||'').indexOf('No pending code')>=0;
+    if(staleCode){
+      // The code was consumed elsewhere (AUTO, serial or an earlier click).
+      // Remove the dead Run buttons instead of leaving a trap for the user.
+      disableCodeCards();
+    }else if(state.runningCode){
+      unmarkCodeConsumed(state.runningCode);
+    }
+    state.runningCode=null;
     setBusy(false);
     logMessage('system','请求失败: '+err.message,'system');
     if(err.status===401){showLogin();}
+    // Reconcile with the device. A stale pending card, or a turn that moved
+    // on without this page, must not leave the console looking idle.
+    refreshStatus().then(function(){
+      if(staleCode){refreshHistory().catch(function(){});}
+    }).catch(function(){});
   });
 }
 function waitForStoppedTurn(active){
@@ -1720,27 +1815,69 @@ function pollStoppedTurn(active){
     var turnBusy=status.turn_busy===undefined?status.busy:status.turn_busy;
     if(turnBusy){setTimeout(function(){pollStoppedTurn(active);},1000);return;}
     state.activeStream=null;
+    state.stopWaiting=false;
     setBusy(false);
     logMessage('system','设备已结束当前回合。','system');
     refreshHistory().catch(function(){});
   }).catch(function(err){
     if(state.activeStream!==active) return;
-    if(err.status===401){state.activeStream=null;setBusy(false);showLogin();return;}
+    if(err.status===401){
+      state.activeStream=null;
+      state.stopWaiting=false;
+      setBusy(false);
+      showLogin();
+      return;
+    }
     setTimeout(function(){pollStoppedTurn(active);},1500);
   });
 }
+function pollDeviceStop(){
+  if(!state.authed) return;
+  refreshStatus().then(function(status){
+    var busy=!!(status.turn_busy||(status.live&&status.live.active));
+    if(busy){
+      state.stopWaiting=true;
+      syncStopButton();
+      setTimeout(pollDeviceStop,1000);
+      return;
+    }
+    state.stopWaiting=false;
+    refreshHistory().catch(function(){});
+  }).catch(function(){setTimeout(pollDeviceStop,1500);});
+}
 function stopStream(){
   var active=state.activeStream;
-  if(!active || active.stopped) return;
+  if(active && active.stopped) return;
+  if(!active){
+    // No request is held by this page, but the device may be running an AUTO
+    // continuation or a scheduled turn. Ask the device to cancel it.
+    if(!state.deviceBusy||state.stopWaiting) return;
+    state.stopWaiting=true;
+    syncStopButton();
+    logMessage('system','已请求停止当前回合，等待设备结束。','system');
+    post('/api/stop',{}).then(function(data){
+      toast(data.message||'已请求停止');
+      pollDeviceStop();
+    }).catch(function(err){
+      state.stopWaiting=false;
+      syncStopButton();
+      toast(err.message);
+    });
+    return;
+  }
   active.stopped=true;
-  show($('stopBtn'),false);
+  state.stopWaiting=true;
+  syncStopButton();
   logMessage('system','已停止接收响应；设备上已开始的代码不会中断，正在等待设备结束。','system');
   if(active.controller){try{active.controller.abort();}catch(e){}}
   waitForStoppedTurn(active);
 }
-function runPending(mode){
+function runPending(mode, source){
   if(state.streaming)return;
-  if(state.pendingEl){var actions=state.pendingEl.querySelector('.actions');if(actions)actions.remove();state.pendingKey=null;state.pendingEl=null;}
+  source=source||state.pendingCode;
+  if(source) markCodeConsumed(source);
+  state.runningCode=source||null;
+  disableCodeCards();
   stream('/api/run',{mode:mode||'background'});
 }
 function sendChat(event){

@@ -1250,6 +1250,40 @@ class AgentTests(unittest.TestCase):
             self.assertIn("Wrote /workspace/tmp/note.txt", joined)
             self.assertIn("hello", joined)
 
+    def test_builtin_workspace_append_and_replace(self):
+        with tempfile.TemporaryDirectory() as root:
+            workspace = Workspace(root, DummyConfig(), clean_tmp=False)
+            responses = [
+                "```tool\n"
+                '{"name":"__workspace","args":{"action":"write",'
+                '"path":"tmp/script.py","content":"a = 1\\nb = 2\\n"}}\n'
+                "```",
+                "```tool\n"
+                '{"name":"__workspace","args":{"action":"replace",'
+                '"path":"tmp/script.py","match":"b = 2","content":"b = 20"}}\n'
+                "```",
+                "```tool\n"
+                '{"name":"__workspace","args":{"action":"append",'
+                '"path":"tmp/script.py","content":"c = 3\\n"}}\n'
+                "```",
+                "Updated in place.",
+            ]
+            llm = FakeLLM(*responses)
+            agent = Agent(
+                DummyConfig(stream=False), llm, DummyBoard(),
+                workspace=workspace,
+            )
+            explanation, has_code = agent.ask("Debug the script")
+            self.assertEqual("Updated in place.", explanation)
+            self.assertFalse(has_code)
+            self.assertEqual(
+                "a = 1\nb = 20\nc = 3\n",
+                workspace.read("tmp/script.py")["text"])
+            joined = "\n".join(
+                message["content"] for message in agent.history)
+            self.assertIn("Replaced 1 occurrence(s)", joined)
+            self.assertIn("Appended to /workspace/tmp/script.py", joined)
+
     def test_ask_tool_ends_turn_and_answers_next_message(self):
         ask_response = (
             "```tool\n"
@@ -1710,6 +1744,13 @@ class AgentTests(unittest.TestCase):
         ][0]
         self.assertIn("background", workspace["parameters"]["properties"])
         self.assertIn("timeout", workspace["parameters"]["properties"])
+        self.assertIn("match", workspace["parameters"]["properties"])
+        self.assertIn("all", workspace["parameters"]["properties"])
+        actions = workspace["parameters"]["properties"]["action"]["enum"]
+        self.assertIn("append", actions)
+        self.assertIn("replace", actions)
+        self.assertIn("several debug cycles", prompt)
+        self.assertIn("/workspace/tmp", prompt)
 
         textual = Agent(
             DummyConfig(native_tools=False), NativeLLM(), DummyBoard(),
@@ -1722,6 +1763,9 @@ class AgentTests(unittest.TestCase):
         self.assertIn("Do not return a python block", prompt)
         self.assertIn("listdir/open/stat", prompt)
         self.assertIn("__workspace", prompt)
+        self.assertIn('"action":"append"', prompt)
+        self.assertIn('"action":"replace"', prompt)
+        self.assertIn("write it once to /workspace/tmp", prompt)
 
     def test_native_tool_calls_execute_and_feed_tool_messages(self):
         class NativeLLM:

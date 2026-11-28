@@ -127,6 +127,9 @@ def run():
     workspace_tool = [
         tool for tool in native if tool["name"] == "__workspace"][0]
     assert "background" in workspace_tool["parameters"]["properties"]
+    assert "match" in workspace_tool["parameters"]["properties"]
+    actions = workspace_tool["parameters"]["properties"]["action"]["enum"]
+    assert "append" in actions and "replace" in actions, actions
     assert MAX_QUESTION_OPTIONS == 8
     rss = (
         '<rss><channel><item><title>Quick &amp; Result</title>'
@@ -312,6 +315,19 @@ def run():
                 shell.config.values["auto_run"] = old_auto
         assert big_result.ok and "workspace-big-ok" in big_result.output, (
             big_result.observation())
+        shell.workspace.write("tmp/edit.py", "a = 1\nb = 2\n")
+        appended = shell.workspace.append("tmp/edit.py", "c = 3\n")
+        assert appended["chars"] == len("a = 1\nb = 2\nc = 3\n"), appended
+        replaced = shell.workspace.replace(
+            "tmp/edit.py", "b = 2", "b = 20")
+        assert replaced["occurrences"] == 1, replaced
+        assert shell.workspace.read("tmp/edit.py")["text"] == (
+            "a = 1\nb = 20\nc = 3\n")
+        edit_result = shell.agent._run_workspace_tool({
+            "action": "replace", "path": "tmp/edit.py",
+            "match": "c = 3", "content": "c = 30"})
+        assert edit_result.ok and "Replaced 1" in edit_result.output, (
+            edit_result.observation())
         assert shell.backgrounds.max_jobs >= 2
         shell.agent.history = [{
             "role": "user", "content": "quick background task",

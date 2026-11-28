@@ -17,6 +17,7 @@ from harness.console import (
     factory_reset_files,
 )
 from harness.executor import ExecutionResult, Executor
+from harness.llm import LLMStreamCancelled
 from harness.schedule import Scheduler
 from tests.support import DummyConfig
 
@@ -316,6 +317,52 @@ class ApplicationTickTests(unittest.TestCase):
         self.assertEqual("web-chat", app.busy_source)
 
 
+class ApplicationStopTests(unittest.TestCase):
+    def make_app(self, source="auto-continue"):
+        app = Application.__new__(Application)
+        app.main_thread_id = threading.get_ident()
+        app.turn_lock = _thread.allocate_lock()
+        app.busy_source = source
+        app.stop_requested = False
+        app.backgrounds = None
+
+        class CancelUI:
+            def __init__(self):
+                self.calls = 0
+
+            def check_cancel(self):
+                self.calls += 1
+
+        app._serial_ui = CancelUI()
+        return app
+
+    def test_request_stop_is_consumed_by_check_cancel(self):
+        app = self.make_app()
+        self.assertTrue(app.request_turn_stop())
+        self.assertTrue(app.stop_requested)
+        with self.assertRaises(LLMStreamCancelled):
+            app.check_cancel()
+        self.assertFalse(app.stop_requested)
+        self.assertEqual(0, app._serial_ui.calls)
+        app.check_cancel()
+        self.assertEqual(1, app._serial_ui.calls)
+
+    def test_web_owned_or_idle_turn_is_not_cancelled(self):
+        app = self.make_app("web-chat")
+        self.assertFalse(app.request_turn_stop())
+        self.assertFalse(app.stop_requested)
+        app.busy_source = ""
+        self.assertFalse(app.request_turn_stop())
+
+    def test_begin_operation_discards_a_stale_stop_flag(self):
+        app = self.make_app("")
+        app.background_active = lambda: False
+        app.stop_requested = True
+        self.assertTrue(app.begin_operation("serial"))
+        self.assertFalse(app.stop_requested)
+        self.assertEqual("serial", app.busy_source)
+
+
 class ApplicationHandoffTests(unittest.TestCase):
     def make_app(self):
         app = Application.__new__(Application)
@@ -452,6 +499,25 @@ class ApplicationConstructionTests(unittest.TestCase):
             self.assertIsNotNone(app.background_store)
             self.assertEqual(0, app.background_seq)
             self.assertFalse(app.background_active())
+
+    def test_main_executor_observes_web_stop_request(self):
+        with tempfile.TemporaryDirectory() as root:
+            with mock.patch("harness.console.SerialUI",
+                            lambda _feed: FakeSerial()):
+                app = Application(
+                    root=root,
+                    config=DummyConfig(web_enabled=False),
+                    supervisor=QuietSupervisor(),
+                )
+            app.stop_requested = True
+            result = app.executor.execute(
+                "for i in range(1000):\n    pass\n", timeout_s=5)
+            self.assertTrue(result.cancelled)
+            self.assertFalse(result.timed_out)
+            app.stop_requested = False
+            result = app.executor.execute("print('still-runs')", timeout_s=5)
+            self.assertTrue(result.ok)
+            self.assertIn("still-runs", result.output)
 
     def test_workspace_run_accepts_file_above_code_limit(self):
         with tempfile.TemporaryDirectory() as root:
@@ -1161,6 +1227,24 @@ class ApplicationScheduleTests(unittest.TestCase):
             self.assertIsNone(app.service_schedules())
         self.assertEqual([], app.agent.asked)
         self.assertTrue(app.schedules.get(1)["enabled"])
+
+    def test_cancelled_auto_code_marks_the_task_cancelled(self):
+        app = self.make_app()
+        self.make_due_prompt(app)
+        app.config.values["auto_run"] = True
+        app.agent.ask = lambda text: ("done", True)
+        app.agent.pending_source = "print(1)"
+        app.agent.last_result = ExecutionResult(
+            False, "", "ExecutionCancelled: stop", 5,
+            False, False, True)
+        with mock.patch(
+                "harness.console.clock.snapshot",
+                return_value=self.snapshot(1020)):
+            app.service_schedules()
+        task = app.schedules.get(1)
+        self.assertEqual("error", task["last_status"])
+        self.assertIn("cancelled", task["last_error"])
+        self.assertFalse(app.turn_lock.locked())
 
     def test_prepare_failure_keeps_one_time_task_for_retry(self):
         app = self.make_app()

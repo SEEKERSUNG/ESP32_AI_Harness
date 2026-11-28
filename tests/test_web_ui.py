@@ -29,6 +29,53 @@ class WebUiTests(unittest.TestCase):
         self.assertIn("document.body.contains(state.pendingEl)", APP_JS)
         self.assertIn("visibilitychange", APP_JS)
 
+    def test_answered_question_is_not_redrawn_into_the_next_turn(self):
+        # A status response issued before the user answered can land while the
+        # answer turn is streaming. It must not insert the old question card at
+        # the top of the new agent bubble.
+        self.assertIn("answeredQuestion:null", APP_JS)
+        self.assertIn("function questionKey(ev){", APP_JS)
+        self.assertIn("el._questionKey=questionKey(ev);", APP_JS)
+        self.assertIn(
+            "if(state.answeredQuestion===questionKey(q)) return;", APP_JS)
+        self.assertIn(
+            "// must not insert a dead card into the new bubble.\n"
+            "  if(state.streaming) return;", APP_JS)
+        self.assertIn(
+            "if(cards[i]._questionKey) state.answeredQuestion=cards[i]._questionKey;",
+            APP_JS)
+        # A failed answer request must let the status poll restore the card.
+        self.assertIn(
+            "state.answeredQuestion=null;\n"
+            "    var staleCode=", APP_JS)
+        # A genuine question event still renders even when its text repeats.
+        self.assertIn(
+            "state.answeredQuestion=null;\n  var text=document.createElement('p');",
+            APP_JS)
+
+    def test_consumed_code_cards_and_device_owned_stop(self):
+        # A code card whose Run button was pressed must not be recreated from
+        # a status request that was issued before the click.
+        self.assertIn("pendingCode:null", APP_JS)
+        self.assertIn("runningCode:null", APP_JS)
+        self.assertIn("consumedCodes:[]", APP_JS)
+        self.assertIn("function codeConsumed", APP_JS)
+        self.assertIn("function markCodeConsumed", APP_JS)
+        self.assertIn("function unmarkCodeConsumed", APP_JS)
+        self.assertIn("if(codeConsumed(p.code)) return;", APP_JS)
+        self.assertIn("function disableCodeCards", APP_JS)
+        self.assertIn("function removeCodeCards", APP_JS)
+        self.assertIn("runPending('foreground',source)", APP_JS)
+        self.assertIn("runPending('background',source)", APP_JS)
+        self.assertIn("No pending code", APP_JS)
+        self.assertIn("if(staleCode){refreshHistory()", APP_JS)
+        # The stop button must also cover turns the page is only observing.
+        self.assertIn("deviceBusy", APP_JS)
+        self.assertIn("function syncStopButton", APP_JS)
+        self.assertIn("function pollDeviceStop", APP_JS)
+        self.assertIn("/api/stop", APP_JS)
+        self.assertIn("if(!state.deviceBusy||state.stopWaiting) return;", APP_JS)
+
     def test_truncated_history_is_announced(self):
         self.assertIn("shown_messages", APP_JS)
         self.assertIn("total_messages", APP_JS)
@@ -188,7 +235,10 @@ class WebUiTests(unittest.TestCase):
             "      // Keep activeStream set until the device confirms the turn is over.",
             APP_JS)
         self.assertIn("waitForStoppedTurn(active);\n      return;", APP_JS)
-        self.assertIn("state.activeStream=null;\n    setBusy(false);", APP_JS)
+        self.assertIn(
+            "state.activeStream=null;\n"
+            "    state.stopWaiting=false;\n"
+            "    setBusy(false);", APP_JS)
         self.assertIn("refreshHistory().catch(function(){});", APP_JS)
 
     def test_auto_toggle_is_confirmed_and_preserves_feedback(self):

@@ -289,6 +289,8 @@ class FakeApp:
         self.ui = UIRouter(FakeSerial())
         self.turn_lock = _thread.allocate_lock()
         self.busy_source = ""
+        self.stop_requested = False
+        self.stop_turn_calls = 0
         self.background_jobs = []
         self.background_seq = 0
         self.background_started = []
@@ -333,6 +335,14 @@ class FakeApp:
         self.busy_source = ""
         if self.turn_lock is not None:
             self.turn_lock.release()
+
+    def request_turn_stop(self):
+        self.stop_turn_calls += 1
+        source = self.busy_source or ""
+        if not source or source.startswith("web-"):
+            return False
+        self.stop_requested = True
+        return True
 
     def is_busy(self):
         if self.background_active():
@@ -1241,6 +1251,31 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(409, raised.exception.status)
         self.assertEqual("pending", raised.exception.code)
         self.assertEqual("ready", self.app.background["phase"])
+
+    def test_stop_turn_targets_main_thread_turns_only(self):
+        token = self.token()
+        self.app.busy_source = "auto-continue"
+        writer = self.call(request("POST", "/api/stop", {}, token=token))
+        self.assertEqual(200, writer.status)
+        self.assertTrue(writer.json["stop_requested"])
+        self.assertEqual("auto-continue", writer.json["busy_source"])
+        self.assertTrue(self.app.stop_requested)
+        self.assertEqual(1, self.app.stop_turn_calls)
+
+        # A web-owned turn is stopped by closing its own stream.
+        self.app.stop_requested = False
+        self.app.busy_source = "web-chat"
+        writer = self.call(request("POST", "/api/stop", {}, token=token))
+        self.assertEqual(200, writer.status)
+        self.assertFalse(writer.json["stop_requested"])
+        self.assertFalse(self.app.stop_requested)
+
+        # Idle device: nothing to stop.
+        self.app.busy_source = ""
+        writer = self.call(request("POST", "/api/stop", {}, token=token))
+        self.assertEqual(200, writer.status)
+        self.assertFalse(writer.json["stop_requested"])
+        self.assertEqual(3, self.app.stop_turn_calls)
 
     def test_continue_restores_background_turn_budget(self):
         token = self.token()

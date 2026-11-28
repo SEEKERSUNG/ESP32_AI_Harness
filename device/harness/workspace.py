@@ -229,6 +229,66 @@ class Workspace:
         write_text(path, value)
         return {"path": self.display(clean), "chars": len(value)}
 
+    def append(self, relative, value):
+        path, clean = self.path(relative, allow_empty=False)
+        if self._is_dir(path):
+            raise WorkspaceError(
+                "Cannot append to a directory: %s" % self.display(clean))
+        if isinstance(value, (bytes, bytearray)):
+            try:
+                value = bytes(value).decode()
+            except ValueError:
+                raise WorkspaceError("Workspace files must be UTF-8 text")
+        else:
+            value = str(value)
+        exists = (os.path.exists(path) if hasattr(os, "exists")
+                  else self._file_exists(path))
+        existing = ""
+        if exists:
+            bundle = self.read_source(relative)
+            if bundle["truncated"]:
+                raise WorkspaceError(
+                    "Workspace file exceeds %s characters"
+                    % self.source_limit())
+            existing = bundle["text"]
+        return self.write(relative, existing + value, overwrite=True)
+
+    def replace(self, relative, match, value, all=False):
+        if not isinstance(match, str) or not match:
+            raise WorkspaceError("match must be non-empty text")
+        if isinstance(value, (bytes, bytearray)):
+            try:
+                value = bytes(value).decode()
+            except ValueError:
+                raise WorkspaceError("Workspace files must be UTF-8 text")
+        else:
+            value = str(value)
+        path, clean = self.path(relative, allow_empty=False)
+        if self._is_dir(path):
+            raise WorkspaceError(
+                "Cannot replace in a directory: %s" % self.display(clean))
+        bundle = self.read_source(relative)
+        if bundle["truncated"]:
+            raise WorkspaceError(
+                "Workspace file exceeds %s characters" % self.source_limit())
+        text = bundle["text"]
+        count = text.count(match)
+        if count == 0:
+            raise WorkspaceError(
+                "match not found in %s" % self.display(clean))
+        if not all and count != 1:
+            raise WorkspaceError(
+                "match occurs %s times in %s; make it unique or set all=true"
+                % (count, self.display(clean)))
+        updated = (text.replace(match, value) if all
+                   else text.replace(match, value, 1))
+        self.write(relative, updated, overwrite=True)
+        return {
+            "path": self.display(clean),
+            "occurrences": count if all else 1,
+            "chars": len(updated),
+        }
+
     def write_bytes(self, relative, value, overwrite=True, limit=None):
         """Write raw bytes, used by the HTTP download tool.
 

@@ -4,6 +4,8 @@
 
 ### Added
 
+- `__workspace` 增量编辑：新增 `append` 和 `replace`（唯一 `match`，`all=true` 全部替换，空 `content` 删除匹配）。系统提示词和工具说明现在建议：需要多轮调试的较长程序先写入 `/workspace/tmp`，之后只发送改动片段并 `run` 存储文件，避免每轮重新输出完整程序；短小的一次性程序仍用普通 python 代码块。`write`/`append`/`replace` 不执行代码，`run` 的确认/AUTO 规则不变；
+- 设备自有回合的网页停止：`/api/status.turn_busy` 为真时，即使本页没有打开的流也显示“停止”按钮；`POST /api/stop` 给串口、AUTO 自动继续和定时任务设置主线程协作取消标志，在 `Application.check_cancel()` 的下一个网络检查点生效，也会让主线程执行器在 `__harness_check()`、插桩后的 `range`、所有 `while` 条件或 `time.sleep()` 检查点返回 `cancelled`。取消后定时任务记为失败，自动继续结束，页面刷新历史并隐藏按钮；浏览器自己的 `/api/chat` 流仍通过关闭请求停止；
 - 后台任务“停止并丢弃”：`__background action=stop_discard`、`/background stopdiscard [ID]`、网页每个任务的“停止并丢弃 #N”和“停止并丢弃全部”，以及 `POST /api/background/stop {"discard":true}`。排队任务立即移除；运行中任务标记 `discard_on_finish`，在协作检查点结束后直接移除，不产生 ready 结果，不会被自动继续/手动继续，也不会在重启后恢复为 error/ready 记录；
 - 定时任务：新增 `schedule.py`、`/state/schedules.json` 持久化和 `__schedule` 内置工具（list/get/create/update/delete/enable/disable/run）。支持一次性（`delay_s` 或本地 `at`）、固定间隔（`every_s`）和每天本地时间（`at=HH:MM`）；提示词任务到点后执行一个正常 Agent 回合，代码任务到点后创建后台任务；AI 创建、修改、启用或立即运行代码任务需要 AUTO，停用/删除不受限。串口主线程在 `Application.idle()` 中逐个执行，RTC 无效时跳过；失败 60 秒后重试、最多 3 次，重复任务错过多次只补跑一次；新增 `/schedule`、`GET/POST /api/schedules` 和网页“任务”页的新建/编辑/启停/立即运行/删除，状态通过 `/api/status.schedules` 和 `schedule_seq` 同步；
 - `__time` 写入与时间区管理：`action=set` 支持本地 `at` 或 UTC `epoch` 写入 `machine.RTC()`（始终保存 UTC），`action=timezone` 修改 `timezone_offset_minutes` 并重排每日定时任务；保留默认 `read` 行为；
@@ -32,6 +34,8 @@
 
 ### Fixed
 
+- 已回答的问题卡会被一个早发出、晚到达的 `/api/status` 响应重新画到下一回合的气泡顶部（回答后模型仍在流式回复时尤其明显），刷新页面后又消失。状态恢复现在会忽略正在流式输出的回合，并记录已回答问题的 header/正文；只有新的 `question` 事件会清除该记录并允许再次显示。回答请求失败时会清除记录，下一次状态轮询仍可恢复待回答问题；
+- 待执行代码卡片的按钮在代码已被 AUTO、串口或另一次点击消费后仍可能保留：一个在点击前发出的 `/api/status` 响应会在新的执行回合里重新画出代码卡，之后点击只会得到 `request failed: No pending code`，页面还会停在看似空闲的状态。现在代码卡记录源码，运行/丢弃后禁用并清理旧按钮；状态恢复不向流式中的回合插入卡片，也不会恢复已消费的源码；遇到 `No pending code` 会移除死按钮、立即刷新状态并在需要时重建历史。`refreshHistory` 改为从新的 `/api/status` 恢复 pending 卡片，避免使用过期快照；
 - 生成代码的 `while <任意条件>:` 此前不会自动插桩，只有 `range()`、字面量 `while True:`/`while 1:` 和 `time.sleep()` 会喂狗；使用 `while time.ticks_diff(...) < ...:` 等轮询循环且不显式调用 `__harness_check()` 时，30 秒看门狗会直接复位设备（`WDT_RESET`）。执行器现在把所有 `while` 条件改写为 `while __harness_check() or (<条件>):`，扫描时跟踪括号、字符串、注释和 `:=`，避免误改切片/字典/lambda 中的冒号；非 `range` 的 `for` 循环和单次迭代内长时间阻塞仍需显式检查；
 - 后台任务或定时任务完成后的 Agent 续答会与上一条回复合并到同一个 turn 卡片，看起来像同一条消息。现在后台结果观察和定时任务都从新的 turn 开始；live 自动继续通过 `separate_turn` 标志创建新 turn，并在新 turn 内显示“后台任务 #N 已返回/定时任务 #N 开始执行”的提示。手动“继续”也会先开启新的 turn；
 - `__http` 出站信任边界加固：DNS 校验与实际连接原本分别解析，存在 rebinding 窗口；现在把校验过的 IPv4 地址固定用于该次 socket 连接，同时保留原主机名的 TLS SNI 和 Host。跨源重定向会丢弃调用方 Header，HTTPS→HTTP 降级被拒绝；URL 和 Header 中的换行/控制字符、非法 Header 名会被拒绝，避免请求头注入；

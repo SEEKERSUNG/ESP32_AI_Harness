@@ -21,6 +21,45 @@ class WorkspaceTests(unittest.TestCase):
             dirs = [entry for entry in root_entries if entry["kind"] == "dir"]
             self.assertTrue(all(entry["size"] == 0 for entry in dirs))
 
+    def test_append_and_replace_edit_only_the_changed_fragment(self):
+        with tempfile.TemporaryDirectory() as root:
+            workspace = Workspace(root, DummyConfig(), clean_tmp=False)
+            workspace.write("tmp/script.py", "a = 1\nb = 2\n")
+            appended = workspace.append("tmp/script.py", "c = 3\n")
+            self.assertEqual(len("a = 1\nb = 2\nc = 3\n"), appended["chars"])
+            replaced = workspace.replace(
+                "tmp/script.py", "b = 2", "b = 20")
+            self.assertEqual(1, replaced["occurrences"])
+            self.assertEqual(len("a = 1\nb = 20\nc = 3\n"), replaced["chars"])
+            self.assertEqual(
+                "a = 1\nb = 20\nc = 3\n",
+                workspace.read("tmp/script.py")["text"])
+            workspace.replace("tmp/script.py", "c = 3\n", "")
+            self.assertEqual(
+                "a = 1\nb = 20\n", workspace.read("tmp/script.py")["text"])
+
+    def test_replace_requires_a_unique_match_unless_all(self):
+        with tempfile.TemporaryDirectory() as root:
+            workspace = Workspace(root, DummyConfig(), clean_tmp=False)
+            workspace.write("a.txt", "x\nx\n")
+            with self.assertRaises(WorkspaceError):
+                workspace.replace("a.txt", "x", "y")
+            result = workspace.replace("a.txt", "x", "y", all=True)
+            self.assertEqual(2, result["occurrences"])
+            self.assertEqual("y\ny\n", workspace.read("a.txt")["text"])
+            with self.assertRaises(WorkspaceError):
+                workspace.replace("a.txt", "missing", "z")
+            with self.assertRaises(WorkspaceError):
+                workspace.replace("a.txt", "", "z")
+
+    def test_append_creates_a_missing_file(self):
+        with tempfile.TemporaryDirectory() as root:
+            workspace = Workspace(root, DummyConfig(), clean_tmp=False)
+            result = workspace.append("tmp/new.py", "print(1)\n")
+            self.assertEqual(len("print(1)\n"), result["chars"])
+            self.assertEqual(
+                "print(1)\n", workspace.read("tmp/new.py")["text"])
+
     def test_write_bytes_and_limit(self):
         with tempfile.TemporaryDirectory() as root:
             config = DummyConfig(

@@ -705,7 +705,7 @@ class Executor:
                     stop = False
                 if stop:
                     raise ExecutionCancelled(
-                        "Background execution stop requested")
+                        "Execution stop requested")
             if deadline is not None and self._elapsed(deadline) >= 0:
                 raise ExecutionTimeout(
                     "Execution exceeded %s second(s)" % timeout

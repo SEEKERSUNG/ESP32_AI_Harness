@@ -516,6 +516,10 @@ class Application:
         self.execution_active = False
         self.backgrounds = None
         self.busy_source = ""
+        # Web stop requests target a turn owned by the main thread (serial,
+        # AUTO continuation or a scheduled prompt). The HTTP client checks
+        # this flag at each receive iteration through check_cancel().
+        self.stop_requested = False
         self._at_prompt = False
         self._auto_continue_running = False
         self._auto_continue_retry_at = 0
@@ -574,6 +578,10 @@ class Application:
             timeout_s=self.config.get("code_timeout_s", 20),
             max_timeout_s=self.config.get("code_timeout_max_s", 300),
             feed=self.feed_execution,
+            # A web stop request also reaches cooperative foreground code
+            # started by serial, AUTO or a scheduled task. A web /api/run
+            # stream cannot use this path because its own web thread is busy.
+            cancel_check=lambda: bool(getattr(self, "stop_requested", False)),
         )
         self.executor.main_runner = self
         self.backgrounds = BackgroundPool(
@@ -663,6 +671,9 @@ class Application:
     def check_cancel(self):
         """Check the active serial or web client for a cancel request."""
         if self.on_main_thread():
+            if getattr(self, "stop_requested", False):
+                self.stop_requested = False
+                raise LLMStreamCancelled()
             self._serial_ui.check_cancel()
             return
         sink = self.ui.sink()
@@ -886,6 +897,13 @@ class Application:
                         self.show_response(explanation, has_code, auto=auto)
                         if auto:
                             self.run_pending(auto=True)
+                            result = getattr(self.agent, "last_result", None)
+                            if (result is not None
+                                    and getattr(result, "cancelled", False)):
+                                # A web stop cancelled cooperative execution;
+                                # record the scheduled run as cancelled rather
+                                # than successful.
+                                raise LLMStreamCancelled()
                     finally:
                         self.live.finish()
                 except LLMStreamCancelled:
@@ -1406,6 +1424,22 @@ class Application:
             request["done"] = True
             self.main_lock.release()
 
+    def request_turn_stop(self):
+        """Request cancellation of a main-thread turn from the web console.
+
+        A turn held by the web thread itself is stopped by closing its HTTP
+        stream, so this only targets serial, AUTO and scheduled turns. The
+        flag is consumed by check_cancel() on the main thread at the next
+        network checkpoint.
+        """
+        if not self.is_turn_busy():
+            return False
+        source = self.busy_source or ""
+        if source.startswith("web-"):
+            return False
+        self.stop_requested = True
+        return True
+
     def begin_operation(self, source):
         # Background jobs run on their own threads, so they no longer occupy
         # the main thread or the turn lock. New conversation turns and
@@ -1420,6 +1454,9 @@ class Application:
         if self.turn_lock is not None:
             if not self.turn_lock.acquire(False):
                 return False
+        # A stop request that was not consumed by the previous turn must not
+        # cancel this new one.
+        self.stop_requested = False
         self.busy_source = source
         return True
 
