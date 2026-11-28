@@ -1,6 +1,7 @@
 import os
 
 from .config import join_path, read_text, write_text
+from .executor import forget_workspace_module
 
 
 class WorkspaceError(Exception):
@@ -228,6 +229,7 @@ class Workspace:
             raise WorkspaceError("Workspace exceeds %s characters" % self.total_limit())
         self._ensure_parent(self._parts(clean, allow_empty=False))
         write_text(path, value)
+        forget_workspace_module(path)
         return {"path": self.display(clean), "chars": len(value)}
 
     def append(self, relative, value):
@@ -328,6 +330,7 @@ class Workspace:
             except OSError:
                 pass
             os.rename(temporary, path)
+        forget_workspace_module(path)
         return {"path": self.display(clean), "bytes": len(data)}
 
     @staticmethod
@@ -358,6 +361,7 @@ class Workspace:
             os.remove(path)
         except OSError:
             raise WorkspaceError("Workspace file not found: %s" % self.display(clean))
+        forget_workspace_module(path)
         return {"path": self.display(clean), "removed": True}
 
     def _remove_tree(self, path):

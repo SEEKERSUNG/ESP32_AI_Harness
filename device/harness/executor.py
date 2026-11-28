@@ -14,6 +14,11 @@ try:
 except ImportError:
     builtins = None
 
+# Resolve the thread id function once; ExecutionRuntime.check() is reached by
+# every explicit checkpoint in dynamically loaded code and must avoid two
+# extra Python method calls on this port.
+_GET_IDENT = _thread.get_ident if _thread is not None else None
+
 
 class ExecutionTimeout(BaseException):
     """Raised by cooperative deadline hooks; BaseException is deliberate.
@@ -590,15 +595,152 @@ def warm_viper_compiler():
         return False
 
 
+# User modules imported from /workspace live in sys.modules for the rest of
+# the boot, but MicroPython never revalidates their source. Editing a driver
+# under /workspace and running the same import again therefore kept executing
+# the old bytecode. Record each imported workspace file's stat stamp at the
+# end of an execution and drop the module before the next one when the file
+# changed, vanished, or has no usable timestamp (in that last case dropping
+# once per run is the safe fallback). Tests patch the root to a temp dir.
+_WORKSPACE_ROOT = "/workspace"
+_WORKSPACE_STAMPS = {}
+
+
+def _workspace_file(path):
+    if not isinstance(path, str):
+        return None
+    path = path.replace("\\", "/")
+    if path.startswith("./"):
+        path = path[2:]
+    if path.startswith("workspace/"):
+        path = "/" + path
+    root = _WORKSPACE_ROOT.replace("\\", "/").rstrip("/")
+    if path.startswith(root + "/"):
+        return path
+    return None
+
+
+def _workspace_stamp(path):
+    try:
+        info = os.stat(path)
+    except Exception:
+        return None
+    try:
+        size = info[6]
+    except (IndexError, TypeError):
+        return None
+    mtime = info[8] if len(info) > 8 else 0
+    ctime = info[9] if len(info) > 9 else 0
+    # LittleFS reports one-second timestamps. Workspace.write()/remove()
+    # additionally forget the module immediately, which covers same-second
+    # rewrites made through the harness; a filesystem without timestamp
+    # fields falls back to re-importing on every execution.
+    if not mtime and not ctime:
+        return None
+    return (path, size, mtime, ctime)
+
+
+def _loaded_workspace_file(module):
+    if module is None:
+        return None
+    try:
+        filename = module.__file__
+    except Exception:
+        return None
+    return _workspace_file(filename)
+
+
+def invalidate_workspace_modules():
+    """Drop workspace modules whose source changed since the last run."""
+    modules = sys.modules
+    try:
+        names = list(modules)
+    except Exception:
+        return False
+    changed = False
+    for name in names:
+        try:
+            module = modules.get(name)
+        except Exception:
+            module = None
+        path = _loaded_workspace_file(module)
+        if path is None:
+            continue
+        stamp = _workspace_stamp(path)
+        if stamp is None or _WORKSPACE_STAMPS.get(name) != stamp:
+            try:
+                del modules[name]
+            except Exception:
+                pass
+            _WORKSPACE_STAMPS.pop(name, None)
+            changed = True
+    return changed
+
+
+def remember_workspace_modules():
+    """Record stat stamps for workspace modules after an execution."""
+    modules = sys.modules
+    stamps = _WORKSPACE_STAMPS
+    stamps.clear()
+    try:
+        names = list(modules)
+    except Exception:
+        return
+    for name in names:
+        try:
+            module = modules.get(name)
+        except Exception:
+            module = None
+        path = _loaded_workspace_file(module)
+        if path is None:
+            continue
+        stamp = _workspace_stamp(path)
+        if stamp is not None:
+            stamps[name] = stamp
+
+
+def forget_workspace_module(path):
+    """Drop a loaded workspace module after its file was written/removed."""
+    target = _workspace_file(path)
+    if target is None:
+        return False
+    modules = sys.modules
+    try:
+        names = list(modules)
+    except Exception:
+        return False
+    found = False
+    for name in names:
+        try:
+            module = modules.get(name)
+        except Exception:
+            module = None
+        if _loaded_workspace_file(module) != target:
+            continue
+        try:
+            del modules[name]
+        except Exception:
+            pass
+        _WORKSPACE_STAMPS.pop(name, None)
+        found = True
+    return found
+
+
 def instrument_source(source):
     """Rewrite range() and while conditions to cooperative checks.
 
     MicroPython compiles ``for i in range(...)`` against the builtin range even
     when a globals dict shadows it, so a globals override is not enough. Every
     ``while <condition>:`` is rewritten to
-    ``while __harness_check() or (<condition>):``; the check returns None
-    normally, so the original truth value is preserved while the deadline,
-    stop request and watchdog feed still run each iteration. The scanner skips
+    ``while __h_tick() or (<condition>):``. ``__h_tick`` is a
+    single-purpose closure that only increments a counter and calls the full
+    deadline/cancel/watchdog poll every adaptive window (1-32 iterations), so
+    a generated while loop pays for one Python call per iteration instead of
+    the comparatively expensive ``__harness_check`` dispatch. The injected
+    name is intentionally short: MicroPython resolves globals through a
+    hash-dependent map, and ``__harness_tick`` measured about 3.5 us/iteration
+    slower than ``__h_tick`` on the reference board. It returns None normally,
+    so the original truth value is preserved. The scanner skips
     strings and comments and leaves attribute/method names alone. Functions
     decorated with ``@micropython.viper`` or ``@micropython.native`` are copied
     verbatim: viper only accepts int/ptr locals and rejects the injected
@@ -682,15 +824,16 @@ def instrument_source(source):
                 if cursor < length and source[cursor] in " \t(":
                     cursor = _skip_spaces(source, cursor)
                     if _is_true_while_condition(source, cursor):
-                        out.append("while __harness_check() or ")
+                        out.append("while __h_tick() or ")
                         index = cursor
                         continue
                     colon = _find_while_colon(source, cursor)
                     if colon is not None:
                         condition = source[cursor:colon]
-                        if not condition.lstrip().startswith(
-                                "__harness_check("):
-                            out.append("while __harness_check() or (")
+                        stripped = condition.lstrip()
+                        if not (stripped.startswith("__harness_check(")
+                                or stripped.startswith("__h_tick(")):
+                            out.append("while __h_tick() or (")
                             out.append(condition)
                             out.append(")")
                             index = colon
@@ -810,9 +953,15 @@ class ExecutionRuntime:
         return stack[-1]
 
     def check(self):
-        context = self.current()
-        if context is not None:
-            context["check"]()
+        # Inline current()/ _ident(): this runs on every explicit checkpoint
+        # in dynamically loaded code, where the per-call dispatch overhead is
+        # measurable on the ESP32-S3.
+        if _GET_IDENT is not None:
+            stack = self.stacks.get(_GET_IDENT())
+        else:
+            stack = self.stacks.get(0)
+        if stack:
+            stack[-1]["check"]()
 
     def sleep(self, seconds):
         context = self.current()
@@ -1039,13 +1188,16 @@ class Executor:
         runtime = execution_runtime()
         registered = False
 
-        # Every instrumented while/range hook lands here, so the fast path
-        # must not allocate, look up attributes or call into the scheduler.
-        # Clock functions, the cancel callback and the watchdog feed are
-        # resolved once per execution; a microsecond counter decides when the
-        # slower work runs. Measured on the reference board: a Python call
-        # costs ~6 us, ticks_ms ~3 us and a bound method ~7 us, so the old
-        # check (~45-80 us per iteration) dominated every generated loop.
+        # Instrumented while conditions and explicit __harness_check() calls
+        # share one counter-gated check; DeadlineRange's 256-iteration gate
+        # and sleep chunks call poll() directly so those low-frequency hooks
+        # always check in full. The check fast path must not allocate, look up
+        # attributes or call into the scheduler: clock functions, the cancel
+        # callback and the watchdog feed are resolved once per execution, and
+        # a counter decides when to poll. Measured on the reference board: a
+        # Python call costs ~6 us, ticks_ms ~3 us and a bound method ~7 us, so
+        # the old full check (~45-80 us per iteration) dominated every
+        # generated loop.
         real_time = runtime.real_time
         if (hasattr(real_time, "ticks_ms")
                 and hasattr(real_time, "ticks_diff")):
@@ -1111,12 +1263,19 @@ class Executor:
                 window = 1
 
         def check():
+            # Every __harness_check() call (explicit or injected) shares this
+            # counter. Only the counter compare runs on the fast path; the
+            # full deadline/cancel/feed poll is amortised over the adaptive
+            # window. Range's 256-iteration gate and sleep chunks call poll()
+            # directly so those low-frequency hooks always check in full.
             nonlocal counter
             counter += 1
             if counter < window:
                 return
             counter = 0
             poll()
+
+        tick = check
 
         # Always use the real time module captured by the runtime. During
         # concurrent executions sys.modules['time'] is the routing proxy, and
@@ -1128,7 +1287,7 @@ class Executor:
         def sleep_ms(milliseconds):
             remaining_ms = int(milliseconds)
             while remaining_ms > 0:
-                check()
+                poll()
                 if deadline is None:
                     # Even without a deadline, chunk long sleeps so cancel
                     # requests and watchdog feeds are observed periodically.
@@ -1151,7 +1310,7 @@ class Executor:
                 remaining_ms -= step
 
         def sleep(seconds):
-            check()
+            poll()
             if deadline is None and self.cancel_check is None:
                 if original_sleep is not None:
                     return original_sleep(seconds)
@@ -1159,7 +1318,7 @@ class Executor:
             return sleep_ms(int(float(seconds) * 1000))
 
         def sleep_us(microseconds):
-            check()
+            poll()
             if deadline is None and self.cancel_check is None:
                 if original_sleep_us is not None:
                     return original_sleep_us(microseconds)
@@ -1191,6 +1350,13 @@ class Executor:
         compile_stage = False
         try:
             try:
+                # Drop cached /workspace modules before compiling or running:
+                # MicroPython never revalidates them, so a driver edited since
+                # the previous run would otherwise execute stale bytecode.
+                try:
+                    invalidate_workspace_modules()
+                except Exception:
+                    pass
                 # Instrument when there is a deadline or a cooperative cancel
                 # source. Infinite background jobs (timeout=0) still need
                 # while/range checkpoints for stop requests and watchdog feeds.
@@ -1214,8 +1380,12 @@ class Executor:
                     scope["print"] = _writer_print(writer)
                 if instrumented:
                     scope["__harness_range"] = (
-                        lambda *args: DeadlineRange(check, *args)
+                        lambda *args: DeadlineRange(poll, *args)
                     )
+                    # Keep the name in sync with instrument_source(): the
+                    # short form avoids a measured hash-lookup penalty in
+                    # MicroPython's exec globals map.
+                    scope["__h_tick"] = tick
                 exec(code, scope)
                 ok = True
             except ExecutionTimeout as exc:
@@ -1245,6 +1415,12 @@ class Executor:
                     runtime.unregister(context)
                 except Exception:
                     pass
+            try:
+                # Stamp the workspace modules that survived this run so the
+                # next execution can tell whether their source changed.
+                remember_workspace_modules()
+            except Exception:
+                pass
             gc.collect()
         return ExecutionResult(
             ok,

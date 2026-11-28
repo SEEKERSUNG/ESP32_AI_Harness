@@ -285,20 +285,106 @@ def run():
     except AttributeError:
         pass
 
-    # The cooperative hook runs on every instrumented while condition. Keep
-    # it cheap: per-iteration cancel/feed/clock work once made generated loops
-    # ~25x slower on this board.
-    perf = Executor(Board(), timeout_s=30).execute(
-        "import time\n"
+    # The cooperative hook runs on every instrumented while condition. Measure
+    # it against the same source executed without instrumentation: the exec
+    # globals themselves already cost ~20 us/iteration on this board, so a
+    # fixed absolute budget would blame the hook for the interpreter's
+    # module-level global access. A full checkpoint (clock + cancel + feed)
+    # costs ~30-40 us, so an un-amortised rewrite shows up as a large delta.
+    loop_source = (
+        "import gc, time\n"
         "n = 1000\n"
+        "gc.collect()\n"
+        "gc.disable()\n"
         "t0 = time.ticks_us()\n"
         "i = 0\n"
         "while i < n:\n"
         "    i += 1\n"
-        "print('check-us', time.ticks_diff(time.ticks_us(), t0) / n)\n")
+        "elapsed = time.ticks_diff(time.ticks_us(), t0)\n"
+        "gc.enable()\n"
+        "print('loop-us', elapsed / n)\n")
+    plain = Executor(Board()).execute(loop_source)
+    assert plain.ok, plain.observation()
+    base_us = float(plain.output.split("loop-us")[1].strip())
+    perf = Executor(Board(), timeout_s=30).execute(loop_source)
     assert perf.ok, perf.observation()
-    check_us = float(perf.output.split("check-us")[1].strip())
-    assert check_us < 50, "instrumented loop is %.1f us/iter" % check_us
+    check_us = float(perf.output.split("loop-us")[1].strip())
+    assert check_us - base_us < 15, (
+        "instrumented loop adds %.1f us/iter (plain %.1f, checked %.1f)"
+        % (check_us - base_us, base_us, check_us))
+    # while uses one __h_tick call per iteration; an extra explicit
+    # __harness_check() in the body must add a second checkpoint call, not
+    # make the automatic condition pay the full poll itself.
+    explicit = Executor(Board(), timeout_s=30).execute(
+        "import gc, time\n"
+        "n = 1000\n"
+        "gc.collect()\n"
+        "gc.disable()\n"
+        "t0 = time.ticks_us()\n"
+        "i = 0\n"
+        "while i < n:\n"
+        "    __harness_check()\n"
+        "    i += 1\n"
+        "elapsed = time.ticks_diff(time.ticks_us(), t0)\n"
+        "gc.enable()\n"
+        "print('explicit-us', elapsed / n)\n")
+    assert explicit.ok, explicit.observation()
+    explicit_us = float(explicit.output.split("explicit-us")[1].strip())
+    assert check_us < explicit_us, (
+        "instrumented while %.1f us is not cheaper than an explicit check "
+        "%.1f us (plain %.1f)" % (check_us, explicit_us, base_us))
+
+    # /workspace modules are user code and may be edited between runs. A
+    # cached sys.modules entry used to keep executing the old bytecode.
+    cache_name = "harness_cache_smoke"
+    cache_path = "/workspace/tmp/" + cache_name + ".py"
+    sys.path.append("/workspace/tmp")
+    try:
+        with open(cache_path, "w") as handle:
+            handle.write("VERSION = 1\n")
+        import_source = (
+            "import %s\n"
+            "print('cache-version', %s.VERSION)\n"
+            % (cache_name, cache_name))
+        first = Executor(Board(), timeout_s=10).execute(import_source)
+        assert first.ok and "cache-version 1" in first.output, (
+            first.observation())
+        # A Workspace write drops the loaded module even when size and the
+        # one-second mtime are unchanged. The reference user workspace may
+        # already be at its total/file limit, so use a permissive config for
+        # this tiny temporary write instead of failing the smoke or deleting
+        # user files.
+        from harness.workspace import Workspace
+
+        class CacheWorkspaceConfig:
+            def get(self, name, default=None):
+                if name in ("workspace_total_limit", "workspace_files_limit"):
+                    return 1048576
+                return default
+
+        Workspace("/", CacheWorkspaceConfig()).write(
+            "tmp/" + cache_name + ".py", "VERSION = 2\n", overwrite=True)
+        second = Executor(Board(), timeout_s=10).execute(import_source)
+        assert second.ok and "cache-version 2" in second.output, (
+            second.observation())
+        # A direct write outside Workspace is detected by the mtime stamp on
+        # the next execution.
+        time.sleep(1.1)
+        with open(cache_path, "w") as handle:
+            handle.write("VERSION = 3\n")
+        third = Executor(Board(), timeout_s=10).execute(import_source)
+        assert third.ok and "cache-version 3" in third.output, (
+            third.observation())
+    finally:
+        sys.modules.pop(cache_name, None)
+        try:
+            sys.path.remove("/workspace/tmp")
+        except ValueError:
+            pass
+        try:
+            os.remove(cache_path)
+        except OSError:
+            pass
 
     # Viper functions compile to native code and only accept int/ptr locals;
     # injecting __harness_range/__harness_check used to raise ViperTypeError.

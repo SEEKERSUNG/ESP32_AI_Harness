@@ -60,6 +60,7 @@
 - 需要多轮调试的较长程序：第一次用 `write` 写到 `/workspace/tmp/<name>.py`，之后用 `replace`/`append` 只发送改动的片段，再 `run` 这个文件；不要在每一轮重新返回完整程序，也不要同时再放一份相同的 python 代码块。短小的一次性程序仍可直接返回 python 代码块。
 - 工作区脚本是数据，不会自动执行。开启 `/auto run on` 后，模型可用 `__workspace run` 直接执行 `.py` 文件并把输出作为工具结果；未开启时，Harness 会显示源码并等待串口确认，拒绝则取消执行。执行超时是 JSON `args.timeout` 字段（可选，受 `code_timeout_max_s` 限制），与 Python 代码块开围栏上的 `timeout=` 注解相互独立。`__workspace run` 和串口 `/workspace run` 都读取完整脚本，上限是 `workspace_file_limit`；`code_limit` 只限制模型生成的 python 代码块，不限制已经写入工作区的脚本。
 - 短脚本优先前台执行。长时间运行或需要与用户继续交互时，传入 `"background": true`（或串口 `/workspace run bg <path>`）创建后台任务；后台脚本仍受 `background_execution`、最大并发、协作停止和看门狗约束，`timeout=0` 只表示无截止时间，不是硬杀。后台任务运行时，前台 `__workspace run` 仍通过主线程 handoff 执行；避免与后台任务同时读写同一个工作区文件。脚本访问硬件时直接 `import machine`/`neopixel` 等 MicroPython 原生模块。
+- 可复用驱动可以放在 `/workspace` 下并在脚本里 `import`。MicroPython 默认会把已导入模块缓存在 `sys.modules` 中且不再检查源文件；Harness 会在每次执行前比较 `/workspace` 模块的 stat 戳（路径、大小、mtime/ctime），文件改写或删除后自动移除缓存，通过 `__workspace` 写入/删除时还会立即失效。因此改完驱动再运行同一脚本会加载新代码，不需要在脚本里手动 `sys.modules.pop()`。
 - 不要把密钥、Wi-Fi 密码或 API Key 写进工作区；这些仍属于 `secrets.json`。
 - 写入前先 `list`/`stat`，避免误覆盖用户文件。
 

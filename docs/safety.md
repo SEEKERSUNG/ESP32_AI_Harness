@@ -14,7 +14,7 @@
 
 ## 看门狗与执行恢复
 
-默认 `watchdog_ms = 30000`。串口等待和网络响应接收期间 Harness 持续喂狗，因此模型生成时间可以超过 30 秒。生成代码里内联的 `@micropython.viper`/`@micropython.native` 会在设备端 `compile()` 时发射原生代码，从 ESP-IDF 内部堆分配；同一个会话反复编译会留下碎片，可能在 `gc.mem_free()` 仍很大时报 `MemoryError`。这类函数应放进按 `.mpy` 部署的 import 模块，编译期 `MemoryError` 的观察文本会注明编译阶段、脚本未执行以及 GC/内部堆状态。生成代码执行期间，只有协作式截止钩子（`__harness_check()`、插桩后的 `range()`/所有 `while` 条件、代理后的 `time.sleep()`）会调用 `feed_execution()` 喂狗；钩子内部按计数摊还，快路径只做计数比较，喂狗约每 250 ms 一次、停止请求约每 25 ms 轮询一次，循环体变慢时自动恢复为每轮检查；不经过这些钩子的代码（如超长非 `range` 的 `for` 循环、单次迭代内长时间阻塞的 C/SPI 调用、`@micropython.viper`/`@micropython.native` 函数）仍会停止喂狗。
+默认 `watchdog_ms = 30000`。串口等待和网络响应接收期间 Harness 持续喂狗，因此模型生成时间可以超过 30 秒。生成代码里内联的 `@micropython.viper`/`@micropython.native` 会在设备端 `compile()` 时发射原生代码；在本板上，一次全新执行中的首次原生发射可能偶发 `MemoryError`（即使内部堆仍有几十 KB 空闲），重试后通常成功，因此执行器在启动时预热编译器，并对编译做 `gc.collect()` 后的三次尝试。重试耗尽时的观察文本会注明失败发生在编译阶段、脚本没有执行、重试次数，以及 viper/native 不是低内存问题；只有非 viper 源码才附带内部堆/PSRAM 数字。生成代码执行期间，只有协作式截止钩子（`__harness_check()`、插桩后的 `range()`/所有 `while` 条件、代理后的 `time.sleep()`）会调用 `feed_execution()` 喂狗；`while` 使用 `__h_tick`，显式 `__harness_check()` 也共用同一个计数器，快路径只做计数比较，按自适应窗口执行完整检查；`range` 的 256 轮门和 `time.sleep()` 分片才每次完整检查。喂狗约每 250 ms 一次、停止请求约每 25 ms 轮询一次；不经过这些钩子的代码（如超长非 `range` 的 `for` 循环、单次迭代内长时间阻塞的 C/SPI 调用、`@micropython.viper`/`@micropython.native` 函数）仍会停止喂狗。
 
 执行前保存：
 

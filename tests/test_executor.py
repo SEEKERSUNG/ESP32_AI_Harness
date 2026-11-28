@@ -1,9 +1,14 @@
+import importlib
+import os
+import shutil
 import sys
+import tempfile
 import time
 import types
 import unittest
 from unittest import mock
 
+import harness.executor as executor_module
 from harness.executor import (
     BufferWriter,
     ExecutionTimeout,
@@ -11,6 +16,7 @@ from harness.executor import (
     instrument_source,
     warm_viper_compiler,
 )
+from harness.workspace import Workspace
 from tests.support import DummyBoard
 
 
@@ -378,7 +384,7 @@ class ExecutorTests(unittest.TestCase):
         self.assertIn("while total < n:", native_body)
         self.assertNotIn("__harness_check", native_body)
         self.assertIn("for j in __harness_range(3):", result)
-        self.assertIn("while __harness_check() or (ready):", result)
+        self.assertIn("while __h_tick() or (ready):", result)
 
     def test_instrument_source_keeps_viper_block_with_strings(self):
         source = (
@@ -478,54 +484,57 @@ class ExecutorTests(unittest.TestCase):
 
     def test_instrument_source_makes_true_while_cooperative(self):
         self.assertIn(
-            "while __harness_check() or True:",
+            "while __h_tick() or True:",
             instrument_source("while True:\n    pass"),
         )
         self.assertIn(
-            "while __harness_check() or (1):",
+            "while __h_tick() or (1):",
             instrument_source("while (1):\n    pass"),
         )
         self.assertIn(
-            "while __harness_check() or (True and ready):",
+            "while __h_tick() or (True and ready):",
             instrument_source("while True and ready:\n    pass"),
         )
         self.assertNotIn(
-            "__harness_check",
+            "__h_tick",
             instrument_source("print('while True:')"),
         )
 
     def test_instrument_source_wraps_general_while_conditions(self):
         result = instrument_source("while flag:\n    pass")
-        self.assertIn("while __harness_check() or (flag):", result)
+        self.assertIn("while __h_tick() or (flag):", result)
         result = instrument_source(
             "while time.ticks_diff(time.ticks_ms(), started) < 100:\n"
             "    pass")
         self.assertIn(
-            "while __harness_check() or "
+            "while __h_tick() or "
             "(time.ticks_diff(time.ticks_ms(), started) < 100):", result)
         # Nested brackets, slices, dict literals and lambdas keep their colon.
         for source, expected in (
             ("while buf[i:j]:\n    pass",
-             "while __harness_check() or (buf[i:j]):"),
+             "while __h_tick() or (buf[i:j]):"),
             ("while {'x': 1}:\n    pass",
-             "while __harness_check() or ({'x': 1}):"),
+             "while __h_tick() or ({'x': 1}):"),
             ("while (lambda: 1)():\n    pass",
-             "while __harness_check() or ((lambda: 1)()):"),
+             "while __h_tick() or ((lambda: 1)()):"),
             ("while (a and\n       b):\n    pass",
-             "while __harness_check() or ((a and\n       b)):"),
+             "while __h_tick() or ((a and\n       b)):"),
             ("while chunk := read():\n    pass",
-             "while __harness_check() or (chunk := read()):"),
+             "while __h_tick() or (chunk := read()):"),
         ):
             self.assertIn(expected, instrument_source(source))
-        # A while already using the explicit check is not double-wrapped.
-        source = "while __harness_check() or done:\n    pass"
-        self.assertEqual(source, instrument_source(source))
+        # A while already using either checkpoint is not double-wrapped.
+        for source in (
+            "while __harness_check() or done:\n    pass",
+            "while __h_tick() or done:\n    pass",
+        ):
+            self.assertEqual(source, instrument_source(source))
         # Strings and comments are untouched.
         self.assertNotIn(
-            "__harness_check",
+            "__h_tick",
             instrument_source("print('while x:')\n# while x:\n"))
         self.assertNotIn(
-            "__harness_check", instrument_source("mywhile = 1\n"))
+            "__h_tick", instrument_source("mywhile = 1\n"))
 
     def test_general_while_loop_is_cooperative_without_explicit_check(self):
         result = Executor(DummyBoard(), timeout_s=1).execute(
@@ -551,6 +560,122 @@ class ExecutorTests(unittest.TestCase):
             "while True:\n    pass")
         self.assertTrue(result.timed_out)
         self.assertIn("ExecutionTimeout", result.error)
+
+
+class WorkspaceModuleCacheTests(unittest.TestCase):
+    module_name = "harness_cache_probe"
+
+    def setUp(self):
+        self.temp = tempfile.mkdtemp(prefix="harness-cache-")
+        self.root = os.path.join(self.temp, "workspace")
+        os.mkdir(self.root)
+        self.path = os.path.join(self.root, self.module_name + ".py")
+        self.patch = mock.patch.object(
+            executor_module, "_WORKSPACE_ROOT", self.root)
+        self.patch.start()
+        executor_module._WORKSPACE_STAMPS.clear()
+        sys.path.insert(0, self.root)
+        self.cleanup_modules()
+
+    def tearDown(self):
+        self.cleanup_modules()
+        executor_module._WORKSPACE_STAMPS.clear()
+        try:
+            sys.path.remove(self.root)
+        except ValueError:
+            pass
+        self.patch.stop()
+        shutil.rmtree(self.temp, ignore_errors=True)
+
+    def cleanup_modules(self):
+        for name in list(sys.modules):
+            if name == self.module_name or name.startswith(
+                    self.module_name + "."):
+                sys.modules.pop(name, None)
+
+    def write_module(self, version, stamp=None):
+        # Include the version in an extra line so CPython's .pyc check (which
+        # compares source size and second-resolution mtime) always invalidates.
+        with open(self.path, "w") as handle:
+            handle.write(
+                "VERSION = %d\nSTATE = []\n# %s\n"
+                % (version, "v%d" % version))
+        if stamp is not None:
+            os.utime(self.path, (stamp, stamp))
+        importlib.invalidate_caches()
+
+    def run_import(self):
+        source = (
+            "import {name}\n"
+            "print('version', {name}.VERSION)\n"
+            "{name}.STATE.append(1)\n"
+            "print('state', len({name}.STATE))\n".format(name=self.module_name)
+        )
+        result = Executor(DummyBoard(), timeout_s=5).execute(source)
+        self.assertTrue(result.ok, result.observation())
+        lines = {
+            line.split()[0]: line.split()[1]
+            for line in result.output.strip().splitlines()
+        }
+        return int(lines["version"]), int(lines["state"])
+
+    def test_rewritten_workspace_module_is_reimported(self):
+        self.write_module(1)
+        version, state = self.run_import()
+        self.assertEqual(1, version)
+        self.assertEqual(1, state)
+
+        # The next execution re-imports only after the file changes. Force a
+        # distinct mtime so the test is independent of filesystem timestamp
+        # granularity.
+        self.write_module(2, stamp=time.time() + 10)
+        version, state = self.run_import()
+        self.assertEqual(2, version)
+        # A fresh module has fresh state.
+        self.assertEqual(1, state)
+
+        # An unchanged file keeps the cached module (and its state).
+        version, state = self.run_import()
+        self.assertEqual(2, version)
+        self.assertEqual(2, state)
+
+    def test_workspace_write_forgets_the_loaded_module_immediately(self):
+        self.write_module(1)
+        version, _ = self.run_import()
+        self.assertEqual(1, version)
+        self.assertIn(self.module_name, sys.modules)
+
+        Workspace(self.temp).write(
+            self.module_name + ".py",
+            "VERSION = 3\nSTATE = []\n# edited through Workspace\n",
+            overwrite=True)
+        self.assertNotIn(self.module_name, sys.modules)
+
+        version, _ = self.run_import()
+        self.assertEqual(3, version)
+
+    def test_deleted_workspace_module_is_dropped(self):
+        self.write_module(1)
+        self.run_import()
+        self.assertIn(self.module_name, sys.modules)
+        os.remove(self.path)
+        self.assertTrue(executor_module.invalidate_workspace_modules())
+        self.assertNotIn(self.module_name, sys.modules)
+
+    def test_workspace_file_matching(self):
+        with mock.patch.object(
+                executor_module, "_WORKSPACE_ROOT", "/workspace"):
+            self.assertEqual(
+                "/workspace/tmp/driver.py",
+                executor_module._workspace_file("workspace/tmp/driver.py"))
+            self.assertEqual(
+                "/workspace/tmp/driver.py",
+                executor_module._workspace_file(
+                    "/workspace/tmp/driver.py"))
+            self.assertIsNone(
+                executor_module._workspace_file("/harness/executor.py"))
+            self.assertIsNone(
+                executor_module._workspace_file("/workspace-other/x.py"))
 
 
 if __name__ == "__main__":
