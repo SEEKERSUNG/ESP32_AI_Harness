@@ -209,6 +209,8 @@ class OpenAIClient:
         self.last_content_chars = 0
         self.last_response_chars = 0
         self.last_thinking_level = "disabled"
+        self.last_thinking_configured = "disabled"
+        self.last_thinking_overridden = False
         self.last_timeout_ms = 0
         self.last_header_timeout_ms = 0
         self.last_idle_timeout_ms = 0
@@ -499,6 +501,10 @@ class OpenAIClient:
         if timeout_override is not None:
             timeout = max(timeout, int(timeout_override))
         self.last_thinking_level = thinking_level
+        self.last_thinking_configured = normalize_thinking_level(
+            self.config.get("thinking_level", "disabled"), "disabled")
+        self.last_thinking_overridden = (
+            self.last_thinking_configured != thinking_level)
         self.last_header_timeout_ms = timeout * 1000
         self.last_timeout_ms = timeout * 1000
         payload = {

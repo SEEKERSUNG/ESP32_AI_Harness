@@ -165,7 +165,7 @@ Skill 是 Markdown 指令包，放在 `/skills/<name>/SKILL.md`，不是可执�
 
 ## 内置工具
 
-Harness 不再支持模型自定义可执行 Tool。模型通过原生 function calling 调用内置工具：`__skill`、`__workspace`、`__memory`、`__search`、`__ask`、`__http`、`__background`、`__time` 和 `__schedule`。OpenAI 兼容端点使用 `tools`，Anthropic 使用 `input_schema`；工具结果以原生 assistant/tool 消息回传。端点拒绝原生工具时自动回退到文本 `tool` 块，也可用 `/native off` 强制使用文本协议。单次任务最多 `max_tool_calls` 次连续调用（默认 16，可在网页“设置 → Harness 行为”调整为 1–64）。`__background` 只查看/请求停止后台任务；`__time` 读取 RTC 并按配置时区返回本地时间/UTC，也可按用户明确要求写入 RTC 或修改显示时区；`__schedule` 管理持久定时任务；内置工具直接读写 Skill、Workspace、MEMORY、Search/HTTP、定时任务或后台状态，不加载任意本地代码。
+Harness 不再支持模型自定义可执行 Tool。模型通过原生 function calling 调用内置工具：`__skill`、`__workspace`、`__memory`、`__search`、`__ask`、`__http`、`__background`、`__time` 和 `__schedule`。OpenAI 兼容端点使用 `tools`，Anthropic 使用 `input_schema`；工具结果以原生 assistant/tool 消息回传。端点拒绝原生工具时自动回退到文本 `tool` 块，也可用 `/native off` 强制使用文本协议。单次任务最多 `max_tool_calls` 次连续调用（默认 64，可在网页“设置 → Harness 行为”调整为 1–128）。`__background` 只查看/请求停止后台任务；`__time` 读取 RTC 并按配置时区返回本地时间/UTC，也可按用户明确要求写入 RTC 或修改显示时区；`__schedule` 管理持久定时任务；内置工具直接读写 Skill、Workspace、MEMORY、Search/HTTP、定时任务或后台状态，不加载任意本地代码。
 
 `__time` 用于回答“现在几点/今天几号”，直接读取 `machine.RTC().datetime()`，不依赖模型猜测：
 
@@ -285,10 +285,10 @@ AI 工具示例：
 /auto on              # 自动运行代码并自动反馈
 /auto off
 /auto run on          # 只自动运行生成代码
-/auto turns 32        # 设置自动反馈最大轮数（1-50，默认 32）
+/auto turns 64        # 设置自动反馈最大轮数（1-128，默认 64）
 ```
 
-- `auto_run`：模型返回 python 代码块后立即本地执行并自动反馈；连续修复受 `max_turns` 限制（默认 32，可用 `/auto turns N` 或“设置 → Harness 行为”调整）。明显包含 `while True`/`while 1` 的代码会被阻止自动执行，需要人工 `/run`。
+- `auto_run`：模型返回 python 代码块后立即本地执行并自动反馈；连续修复受 `max_turns` 限制（默认 64，可用 `/auto turns N` 或“设置 → Harness 行为”调整）。明显包含 `while True`/`while 1` 的代码会被阻止自动执行，需要人工 `/run`。
 - Skill 保存仍然需要确认。
 - 复位恢复的待审代码不会在启动时自动运行。
 - 自动模式绕过逐次确认，适合可信的本地开发会话。网页对话框旁的 AUTO 控制 `auto_run`，开启需要确认；`auto_feedback`、`background_execution` 和 `max_tool_calls` 在“设置 → Harness 行为”单独配置。

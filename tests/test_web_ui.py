@@ -4,6 +4,19 @@ from harness.webui import APP_CSS, APP_JS, INDEX_HTML
 
 
 class WebUiTests(unittest.TestCase):
+    def test_assistant_text_is_rendered_as_markdown(self):
+        self.assertIn("function renderMarkdown", APP_JS)
+        self.assertIn("function markdownInline", APP_JS)
+        self.assertIn("markdown-body", APP_CSS)
+        self.assertIn("renderMarkdown(body,segment.text)", APP_JS)
+        # Raw HTML from the model must be escaped before Markdown formatting.
+        self.assertIn("function escapeHtmlText", APP_JS)
+        self.assertIn(".replace(/</g,'&lt;')", APP_JS)
+        # Streaming chunks coalesce re-renders instead of appending raw text.
+        self.assertIn("function scheduleAssistantRender", APP_JS)
+        self.assertIn("bubble assistant answer-bubble", APP_JS)
+        self.assertIn("code-segment", APP_JS)
+
     def test_chat_composer_owns_thinking_and_auto_controls(self):
         self.assertIn('id="chatThinking"', INDEX_HTML)
         self.assertIn('id="chatAuto"', INDEX_HTML)

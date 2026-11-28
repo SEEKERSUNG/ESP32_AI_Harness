@@ -52,7 +52,7 @@ ESP32-S3 的 PSRAM 使完整 Harness 环境下重新建立 TLS 连接不再受�
 
 - **串口主线程**：持有 REPL、前台 `os.dupterm` 和看门狗喂狗权；运行串口命令、模型回合、前台生成代码和 Workspace 脚本。
 - **Web 线程**：一个后台 `_thread` 运行单请求 HTTP/1.1 服务器（`Connection: close`，32 KB 栈）；处理认证、静态资源、JSON、NDJSON 流和网页命令。
-- **后台 worker 线程**：`BackgroundPool` 为每个任务创建一个 `_thread`（默认 32 KB 栈），最多同时运行 `background_max_jobs` 个（默认 4，范围 1–4），其余排队。启动 worker 前会关闭空闲 HTTP/TLS 连接并 GC；`_thread.start_new_thread` 因 ESP-IDF 内部堆不足失败时，会依次尝试 32/24/16/12/8 KB 栈，仍失败才把错误回传。Worker 不得调用 `os.dupterm`、`machine.reset` 或喂狗；输出通过执行运行时的线程级 `print` 路由器进入任务自己的有界缓冲区。
+- **后台 worker 线程**：`BackgroundPool` 为每个任务创建一个 `_thread`（默认 64 KB 栈），最多同时运行 `background_max_jobs` 个（默认 4，范围 1–4），其余排队。启动 worker 前会关闭空闲 HTTP/TLS 连接并 GC；`_thread.start_new_thread` 因 ESP-IDF 内部堆不足失败时，会依次尝试 32/24/16/12/8 KB 栈，仍失败才把错误回传。Worker 不得调用 `os.dupterm`、`machine.reset` 或喂狗；输出通过执行运行时的线程级 `print` 路由器进入任务自己的有界缓冲区。
 - **UIRouter**：`Application.ui` 按线程 ID 路由输出。串口主线程始终解析到 `SerialUI`；Web 线程在请求期间绑定 `WebTurnSink` 或 `CommandCaptureSink`，结束后注销。Agent 回调固定绑定 `Application.show_*`，不交换回调。
 - **单回合锁**：`turn_lock` 保护模型回合、配置写入、Wi-Fi 切换、save/discard 等变更操作。后台任务运行期间，串口会话、`web-chat`、前台 `web-run`、`web-continue`、`auto-continue` 和后台控制仍可获取回合锁；配置/维护类 Web 操作仍返回 409，`is_busy()` 同时阻止 Web 空闲 tick 的网络维护。
 - **主线程执行 handoff**：Web 线程需要执行前台生成代码或 Workspace 脚本时，把可调用对象放入 `main_request`，串口主线程在 `SerialUI.readline` 的空闲钩子 `Application.idle()` 中执行并发布结果。`Executor.execute()` 检测到非主线程时会通过 `run_on_main()` 回到主线程；后台任务的 worker executor 不设置 `main_runner`，因此直接在自己的线程运行。AUTO 模式且 `auto_feedback=true` 时，同一个空闲钩子还会自动提交已完成的后台结果并继续模型对话；它只在顶层 `esp32>` 提示符、没有待执行代码/Skill/问题且串口没有已缓冲命令时触发，手动模式保留显式继续/丢弃。自动继续的 reasoning/content 块同时写入有界 `LiveTurn` 缓冲，`GET /api/live` 供网页增量拉取；`LiveTurn.begin(separate_turn=True)` 标记这是一条独立消息，网页据此新建 turn 气泡组，后台/定时续答不会与上一条回复合并。该缓冲只用于显示，权威上下文仍是继续完成后的 `agent.history`；刷新历史时 `Local ESP32 background execution result` 观察也会开启新的 turn。
@@ -109,7 +109,7 @@ MCP 调用在模型回合线程执行（串口主线程或 Web 线程）；Web �
 
 ## 自动模式
 
-`auto_run` 默认关闭。开启后，模型返回的代码块会立即执行并进入自动反馈循环；Skill 保存仍需确认。自动反馈受 `max_turns` 限制（默认 32，可用 `/auto turns N` 或“设置 → Harness 行为”调整），明显无限循环的代码会被阻止自动执行。启动时恢复的待审代码不会自动执行。
+`auto_run` 默认关闭。开启后，模型返回的代码块会立即执行并进入自动反馈循环；Skill 保存仍需确认。自动反馈受 `max_turns` 限制（默认 64，可用 `/auto turns N` 或“设置 → Harness 行为”调整），明显无限循环的代码会被阻止自动执行。启动时恢复的待审代码不会自动执行。
 
 自动模式下，如果模型在解释文字中向用户提问，同时又返回 python 代码块，Harness 会把“提问 + 代码”当作协议错误回传模型，要求它改用 `__ask` 或只返回代码；该代码不会自动执行。系统提示词还要求示例、片段和伪代码使用 text 代码块而不是 python 代码块，因为所有 python fence 都会被视为可执行代码。这些规则是保守启发式，不能替代用户审查。
 
@@ -221,14 +221,14 @@ ESP32-S3 N16R8 约有 8.3 MB GC 空闲堆和 14 MB 文件系统。代码仍保�
 - `__http` 受 `http_tool_response_limit`、`http_tool_output_limit`、`http_tool_download_limit`、`http_tool_max_redirects`、`http_tool_max_url_chars`、`http_tool_max_headers` 和允许端口限制；
 - MCP 受 `mcp_max_servers`、`mcp_tool_limit`、`mcp_prompt_chars`、`mcp_args_limit`、`mcp_output_limit`、`mcp_response_limit`、每服务器 `max_tools` 和 `mcp_refresh_budget_s` 限制；
 - 持久对话受 `conversation_max_chars` 和 `conversation_max_messages` 限制；
-- 后台任务受 `background_max_jobs`（默认 4，最多 4 个 worker）、`background_thread_stack_kb`（默认 32）和 `background_max_records`（默认 8 条，每条输出 4096 字符）限制；
-- 内置工具最多 `max_tool_calls`（默认 16，可在“设置 → Harness 行为”调整为 1–64）次连续调用；
+- 后台任务受 `background_max_jobs`（默认 4，最多 4 个 worker）、`background_thread_stack_kb`（默认 64）和 `background_max_records`（默认 8 条，每条输出 4096 字符）限制；
+- 内置工具最多 `max_tool_calls`（默认 64，可在“设置 → Harness 行为”调整为 1–128）次连续调用；
 - `input_limit` 拒绝过大的单次任务；
 - 当前反馈轮至少保留任务、源码和观察结果；
 - `response_limit` 限制非流式网络正文，`stream_response_limit` 限制 SSE 总字节；
 - `code_limit` 限制生成代码；
 - `output_limit` 限制执行输出；
-- `max_turns` 限制连续云端反馈（默认 32，可用 `/auto turns N` 调整）；
+- `max_turns` 限制连续云端反馈（默认 64，可用 `/auto turns N` 调整）；
 - 请求前后主动 GC；
 - HTTP 拒绝压缩正文。
 

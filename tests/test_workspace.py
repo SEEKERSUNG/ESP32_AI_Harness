@@ -52,6 +52,25 @@ class WorkspaceTests(unittest.TestCase):
             with self.assertRaises(WorkspaceError):
                 workspace.replace("a.txt", "", "z")
 
+    def test_replace_failure_suggests_nearby_lines(self):
+        with tempfile.TemporaryDirectory() as root:
+            workspace = Workspace(root, DummyConfig(), clean_tmp=False)
+            workspace.write(
+                "tmp/script.py",
+                "def read_sensor():\n    return 1\n\nprint(read_sensor())\n",
+            )
+            with self.assertRaises(WorkspaceError) as caught:
+                workspace.replace(
+                    "tmp/script.py",
+                    "def read_sensor():\n\treturn 2",
+                    "def read_sensor():\n    return 2",
+                )
+            message = str(caught.exception)
+            self.assertIn("match not found", message)
+            self.assertIn("closest lines", message)
+            self.assertIn("read_sensor", message)
+            self.assertIn("1:", message)
+
     def test_append_creates_a_missing_file(self):
         with tempfile.TemporaryDirectory() as root:
             workspace = Workspace(root, DummyConfig(), clean_tmp=False)

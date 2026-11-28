@@ -2132,7 +2132,7 @@ class Agent:
             format_rounds = 0
             action_rounds = 0
             if native_calls:
-                limit = self.config.get("max_tool_calls", 16)
+                limit = self.config.get("max_tool_calls", 64)
                 if len(native_calls) > 1 and any(
                         call.get("name") == "__ask" for call in native_calls):
                     raise ActionFormatError(
@@ -2174,11 +2174,11 @@ class Agent:
                     explanation, calls, results, self._last_reasoning))
                 continue
             if tool_call is not None:
-                if tool_rounds >= self.config.get("max_tool_calls", 16):
+                if tool_rounds >= self.config.get("max_tool_calls", 64):
                     raise AgentError(
                         "Tool call limit reached (%s); simplify the task or "
                         "raise max_tool_calls in Settings > Harness behavior"
-                        % self.config.get("max_tool_calls", 16)
+                        % self.config.get("max_tool_calls", 64)
                     )
                 tool_rounds += 1
                 result = self._execute_tool(tool_call)
@@ -4773,6 +4773,14 @@ class Agent:
             return False
 
     def _summary_request(self, messages, max_tokens):
+        configured = normalize_thinking_level(
+            self.config.get("thinking_level", "high"), "high")
+        if configured != "disabled":
+            # Compaction is a separate, bounded request; do not let the user
+            # think their High/Max setting applied to it.
+            self._notice(
+                "Context summary request uses thinking=disabled "
+                "(configured thinking=%s)." % configured)
         timeout = self._int_config("summary_timeout", 300)
         if ((self.config.get("stream", True)
              or getattr(self.llm, "force_stream", False))

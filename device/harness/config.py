@@ -40,7 +40,7 @@ DEFAULTS = {
     "summary_char_limit": 8192,
     "summary_input_chars": 120000,
     "summary_timeout": 300,
-    "max_tool_calls": 16,
+    "max_tool_calls": 64,
     "native_tools": True,
     "prompt_cache": True,
     "max_format_retries": 1,
@@ -60,7 +60,7 @@ DEFAULTS = {
     "workspace_read_limit": 16384,
     "workspace_list_limit": 100,
     "memory_char_limit": 8192,
-    "memory_append_limit": 512,
+    "memory_append_limit": 2048,
     "search_enabled": True,
     "search_provider": "auto",
     "http_tool_enabled": True,
@@ -105,7 +105,7 @@ DEFAULTS = {
     "output_limit": 4096,
     "code_timeout_s": 20,
     "code_timeout_max_s": 300,
-    "max_turns": 32,
+    "max_turns": 64,
     "request_timeout": 120,
     "wifi_timeout": 25,
     "watchdog_ms": 30000,
@@ -248,11 +248,23 @@ class Config:
                 and stored.get("web_history_chars") == 32768):
             self.values["web_history_limit"] = 200
             self.values["web_history_chars"] = 131072
+        # Old default limits were too low for long agent loops. Keep explicit
+        # custom values, but move configurations that still carry the old
+        # defaults to the new ones.
+        legacy_limit = False
+        for key, old, new in (
+            ("max_turns", 32, 64),
+            ("max_tool_calls", 16, 64),
+            ("memory_append_limit", 512, 2048),
+        ):
+            if stored.get(key) == old:
+                self.values[key] = new
+                legacy_limit = True
         # Drop settings from removed features so old config.json files do not
         # keep advertising them in /status. The standalone DeepSeek Search API
         # and its dedicated key were removed; AUTO now uses provider-native
         # search or keyless Bing.
-        legacy_config = False
+        legacy_config = legacy_limit
         for key in ("auto_save_tools", "tools_in_prompt",
                     "tool_data_file_limit", "tool_data_total_limit",
                     "tool_data_files", "search_url", "search_content_limit",

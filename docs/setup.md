@@ -260,7 +260,7 @@ SSID:     ESP32-Harness-XXXX
 - `/context` 查看近似 token 使用和自动压缩阈值；`/compact` 手动压缩较早历史，`/summary` 查看摘要。
 - 生成代码直接使用 MicroPython 的 `machine`、`neopixel`、`framebuf` 等模块；没有 `/peripherals` 配置步骤，也没有 `api` 对象。接线和引脚由用户提供，可用 `I2C.scan()` 确认设备地址（例如 SSD1306 的 `0x3C`）。
 - `/auto run on` 自动执行生成代码并自动反馈；默认关闭，建议只在可信会话开启。
-- 网页“设置 → Harness 行为”可关闭 `background_execution`（默认开启），并调整 `background_max_jobs`（默认 4，范围 1–4）和 `max_tool_calls`（默认 16，范围 1–64）。开启时网页可同时运行多个后台任务、继续发消息或前台运行其他代码；每个任务显示编号、备注和耗时，可分别停止。AUTO 模式且 `auto_feedback` 开启时，设备主线程会自动继续完成的后台结果，不要求用户选择“继续/丢弃”，也不依赖网页保持打开；手动模式仍显示继续/丢弃按钮。AI 或网页按钮可请求停止；`timeout=0`/`infinite` 可让后台任务无截止时间运行，但停止仍依赖协作检查点。串口可用 `/run bg [备注]`、`/background` 和 `/continue [id]`。`background_thread_stack_kb`（默认 32）和 `background_max_records`（默认 8）通常无需修改。它不改变确认、超时或权限规则。
+- 网页“设置 → Harness 行为”可关闭 `background_execution`（默认开启），并调整 `background_max_jobs`（默认 4，范围 1–4）和 `max_tool_calls`（默认 64，范围 1–128）。开启时网页可同时运行多个后台任务、继续发消息或前台运行其他代码；每个任务显示编号、备注和耗时，可分别停止。AUTO 模式且 `auto_feedback` 开启时，设备主线程会自动继续完成的后台结果，不要求用户选择“继续/丢弃”，也不依赖网页保持打开；手动模式仍显示继续/丢弃按钮。AI 或网页按钮可请求停止；`timeout=0`/`infinite` 可让后台任务无截止时间运行，但停止仍依赖协作检查点。串口可用 `/run bg [备注]`、`/background` 和 `/continue [id]`。`background_thread_stack_kb`（默认 32）和 `background_max_records`（默认 8）通常无需修改。它不改变确认、超时或权限规则。
 - 定时任务在网页“任务 → 自动化任务”和 `/schedule` 中管理，保存在 `/state/schedules.json`。提示词任务到点后发起 Agent 回合，代码任务到点后创建后台任务；RTC 需已由 NTP 校准。`schedule_max_tasks`（默认 8）和 `schedule_min_interval_s`（默认 30）通常无需修改；时区由 `timezone_offset_minutes` 决定。
 
 ## 9. 设备文件

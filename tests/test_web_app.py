@@ -1562,19 +1562,19 @@ class WebAppTests(unittest.TestCase):
     def test_config_updates_max_tool_calls_bounds(self):
         token = self.token()
         writer = self.call(request("POST", "/api/config", {
-            "max_tool_calls": 32,
+            "max_tool_calls": 96,
         }, token=token))
         self.assertEqual(200, writer.status)
-        self.assertEqual(32, self.app.config.get("max_tool_calls"))
+        self.assertEqual(96, self.app.config.get("max_tool_calls"))
         config = self.call(request("GET", "/api/config", token=token))
-        self.assertEqual(32, config.json["max_tool_calls"])
-        for value in (0, 65):
+        self.assertEqual(96, config.json["max_tool_calls"])
+        for value in (0, 129):
             with self.assertRaises(WebError) as raised:
                 self.call(request("POST", "/api/config", {
                     "max_tool_calls": value,
                 }, token=token))
             self.assertEqual(400, raised.exception.status)
-        self.assertEqual(32, self.app.config.get("max_tool_calls"))
+        self.assertEqual(96, self.app.config.get("max_tool_calls"))
 
     def test_config_updates_context_and_auto_compact(self):
         token = self.token()

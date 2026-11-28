@@ -57,7 +57,7 @@
 
 **执行与硬件**
 
-- **确认后执行**：模型生成的 Python 默认经确认后在设备上 `compile()` / `exec()`；可选自动执行和自动反馈，受 `max_turns` 限制（默认 32）。
+- **确认后执行**：模型生成的 Python 默认经确认后在设备上 `compile()` / `exec()`；可选自动执行和自动反馈，受 `max_turns` 限制（默认 64）。
 - **协作式超时**：默认 20 秒执行超时，`range()`、所有 `while` 条件、`time.sleep()` 和显式 `__harness_check()` 会在截止时间或停止请求处停止并返回 `status=timeout`/`cancelled`，不会因普通超时重启设备。
 - **多后台任务**：短程序优先前台执行；长时间任务可在独立 worker 线程运行（默认最多 4 个），串口主线程仍可继续对话或处理网页请求。停止是协作式的，阻塞 C/SPI 调用仍只能等看门狗。后台任务统一显示在网页“任务 → 后台任务”，不再插入聊天气泡。
 - **定时任务**：一次性、固定间隔或每天本地时间执行；提示词任务到点后发起一个 Agent 回合，代码任务到点后启动后台程序。AI 可通过 `__schedule` 创建、编辑、删除、启停和立即运行；AI 创建/编辑/启用/立即运行代码任务需要 AUTO，网页表单由管理员确认。任务持久化在 `/state/schedules.json`，RTC 有效时由主线程空闲执行，失败自动重试三次。
@@ -259,7 +259,7 @@ URL:  http://192.168.4.1/
 /continue 1 # 提交 1 号任务结果并继续对话
 ```
 
-执行结果按配置自动反馈给模型；后续修复代码仍需 `/run` 确认，自动反馈轮数由 `max_turns` 限制（默认 32，可用 `/auto turns N` 或“设置 → Harness 行为”调整）。执行超时默认 20 秒，模型可以在代码块开围栏同一行写 `timeout=45` 选择更长的截止时间（上限 `code_timeout_max_s=300`）。超时后 Harness 返回 `status=timeout` 并让模型继续，不会因为普通超时重启设备；`range()`、所有 `while` 条件（不只 `while True`）和 `time.sleep()` 已自动插桩。遍历其他可迭代对象的超长 `for` 循环，或单次迭代内长时间阻塞的调用，仍应显式调用 `__harness_check()`。
+执行结果按配置自动反馈给模型；后续修复代码仍需 `/run` 确认，自动反馈轮数由 `max_turns` 限制（默认 64，可用 `/auto turns N` 或“设置 → Harness 行为”调整）。执行超时默认 20 秒，模型可以在代码块开围栏同一行写 `timeout=45` 选择更长的截止时间（上限 `code_timeout_max_s=300`）。超时后 Harness 返回 `status=timeout` 并让模型继续，不会因为普通超时重启设备；`range()`、所有 `while` 条件（不只 `while True`）和 `time.sleep()` 已自动插桩。遍历其他可迭代对象的超长 `for` 循环，或单次迭代内长时间阻塞的调用，仍应显式调用 `__harness_check()`。
 
 后台任务在自己的 worker 线程运行，适合长时间采集或需要与用户继续交互的场景；短程序优先使用前台。停止是协作式的：只设置取消标志，在检查点抛出 `ExecutionCancelled`，阻塞在 C/SPI 调用中的任务可能只能重启设备。“停止并丢弃”会额外丢弃结果：排队任务立即移除，运行中的任务在协作检查点结束后直接移除，不产生可继续或可丢弃的 ready 结果。`timeout=0`/`infinite` 允许后台无截止时间运行，但不暂停 30 秒看门狗。
 
@@ -288,7 +288,7 @@ URL:  http://192.168.4.1/
 | `/thinking [level]` | 查看或设置 thinking：disable/low/high/max（默认 high） |
 | `/thinking show on\|off` | 显示或隐藏 reasoning 文本 |
 | `/auto [on\|off]` | 自动运行生成代码并自动反馈 |
-| `/auto turns N` | 设置自动反馈最大轮数（默认 32，范围 1–50） |
+| `/auto turns N` | 设置自动反馈最大轮数（默认 64，范围 1–128） |
 | `/run` / `/run bg [note]` / `/continue [id]` | 前台执行、创建后台任务，或继续某个后台结果 |
 | `/background [list\|status ID\|stop [ID]\|stopdiscard [ID]\|note ID TEXT\|discard ID]` | 查看和管理多个后台任务；`stopdiscard` 停止并丢弃结果 |
 | `/schedule [list\|status ID\|run ID\|enable ID\|disable ID\|delete ID]` | 查看和管理定时任务 |

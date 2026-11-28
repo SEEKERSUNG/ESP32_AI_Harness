@@ -10,7 +10,7 @@ from harness.config import Config, ConfigError
 class ConfigTests(unittest.TestCase):
     def test_auto_feedback_default_turns(self):
         with tempfile.TemporaryDirectory() as root:
-            self.assertEqual(32, Config(root).get("max_turns"))
+            self.assertEqual(64, Config(root).get("max_turns"))
 
     def test_round_trip_and_secret_separation(self):
         with tempfile.TemporaryDirectory() as root:
@@ -132,6 +132,28 @@ class ConfigTests(unittest.TestCase):
             }), encoding="utf-8")
             # Still migrated: the marker key is unrelated to these two.
             self.assertEqual(200, Config(root).get("web_history_limit"))
+
+    def test_legacy_feedback_and_tool_limits_are_migrated(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = pathlib.Path(root) / "config.json"
+            path.write_text(json.dumps({
+                "max_turns": 32,
+                "max_tool_calls": 16,
+                "memory_append_limit": 512,
+            }), encoding="utf-8")
+            config = Config(root)
+            self.assertEqual(64, config.get("max_turns"))
+            self.assertEqual(64, config.get("max_tool_calls"))
+            self.assertEqual(2048, config.get("memory_append_limit"))
+            path.write_text(json.dumps({
+                "max_turns": 40,
+                "max_tool_calls": 20,
+                "memory_append_limit": 600,
+            }), encoding="utf-8")
+            config = Config(root)
+            self.assertEqual(40, config.get("max_turns"))
+            self.assertEqual(20, config.get("max_tool_calls"))
+            self.assertEqual(600, config.get("memory_append_limit"))
 
     def test_thinking_text_is_visible_by_default(self):
         with tempfile.TemporaryDirectory() as root:

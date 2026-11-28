@@ -460,6 +460,21 @@ class AnthropicTests(unittest.TestCase):
         self.assertEqual("stop", client.last_finish_reason)
         self.assertEqual(1, len(client.last_thinking_blocks))
 
+    def test_thinking_override_is_reported(self):
+        client = AnthropicClient(
+            anthropic_config(thinking_level="high"),
+            FakeStreamHttp(text_stream("ok")))
+        client.complete_stream([], thinking_level="disabled")
+        self.assertEqual("disabled", client.last_thinking_level)
+        self.assertEqual("high", client.last_thinking_configured)
+        self.assertTrue(client.last_thinking_overridden)
+        client = AnthropicClient(
+            anthropic_config(thinking_level="high"),
+            FakeStreamHttp(text_stream("ok")))
+        client.complete_stream([])
+        self.assertEqual("high", client.last_thinking_level)
+        self.assertFalse(client.last_thinking_overridden)
+
     def test_usage_is_captured(self):
         lines = message_events([{"type": "text", "text": "answer"}], usage={
             "input_tokens": 120,

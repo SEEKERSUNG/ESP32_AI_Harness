@@ -54,7 +54,7 @@ HELP = """Commands:
   /thinking [level]     Show/set thinking: disable, low, high, max (saved)
   /thinking show on|off Show/hide reasoning text (default: on)
   /auto [on|off]        Auto-run generated code and auto-feedback
-  /auto turns N         Set maximum automatic feedback turns (1-50)
+  /auto turns N         Set maximum automatic feedback turns (1-128)
   /native [on|off]      Show/configure native function calling
   /ca                   Paste and save the API CA certificate
   /test                 Test Wi-Fi, NTP and TLS settings
@@ -1871,6 +1871,22 @@ class Application:
                          input_tokens, output_tokens, cache_read, cache_write))
         if error:
             self.ui.line("model error: %s" % error)
+        configured_level = getattr(self.llm, "last_thinking_configured", "")
+        if getattr(self.llm, "last_thinking_overridden", False):
+            self.ui.line(
+                "thinking: configured=%s, this request used=%s"
+                % (configured_level, getattr(
+                    self.llm, "last_thinking_level", "disabled")))
+        if (not error
+                and getattr(self.llm, "last_thinking_level", "disabled")
+                != "disabled"
+                and reasoning_chars == 0
+                and str(self.config.get("model", "")).lower().startswith(
+                    "deepseek")):
+            self.ui.line(
+                "thinking: %s requested but the model returned no reasoning "
+                "text; the provider may ignore thinking for this model."
+                % getattr(self.llm, "last_thinking_level", ""))
         if self.config.get("show_thinking") and not streamed:
             self.ui.line("--- thinking ---")
             limit = self.config.get("thinking_print_limit")
@@ -2580,14 +2596,14 @@ class Application:
                 turns = int(args[1])
             except (TypeError, ValueError):
                 raise ValueError("Feedback turns must be an integer")
-            if turns < 1 or turns > 50:
-                raise ValueError("Feedback turns must be between 1 and 50")
+            if turns < 1 or turns > 128:
+                raise ValueError("Feedback turns must be between 1 and 128")
             self.config.set("max_turns", turns)
             self.ui.line("Maximum automatic feedback turns: %s" % turns)
             return
         else:
             raise ValueError(
-                "Usage: /auto [on|off], /auto run <on|off>, or /auto turns <1-50>"
+                "Usage: /auto [on|off], /auto run <on|off>, or /auto turns <1-128>"
             )
         self.show_auto(run)
         if run:
@@ -2615,7 +2631,7 @@ class Application:
     def show_auto(self, run):
         self.ui.line("Auto mode: %s" % ("on" if run else "off"))
         self.ui.line("  auto-run generated code: %s" % ("on" if run else "off"))
-        self.ui.line("  max automatic feedback turns: %s" % self.config.get("max_turns", 32))
+        self.ui.line("  max automatic feedback turns: %s" % self.config.get("max_turns", 64))
 
     def show_workspace_summary(self):
         summary = self.workspace.summary()

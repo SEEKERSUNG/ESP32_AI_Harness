@@ -16,13 +16,13 @@
 新增或修改这些系统时至少覆盖：
 
 - Skill 的 `SKILL.md` frontmatter、保存、读取、删除和长度限制；
-- `tool` 调用循环、内置工具结果回到模型、`max_tool_calls`（默认 16）上限；
+- `tool` 调用循环、内置工具结果回到模型、`max_tool_calls`（默认 64）上限；
 - 原生 function calling：OpenAI `tools` 定义与 `tool_calls` 累积、Anthropic `input_schema` 与 `tool_use`/`input_json_delta`、assistant/tool 消息转换、空正文但有效工具调用、端点拒绝原生工具后的文本回退、`/native off`；
 - 内置工具协议容错：`tool_call`/`arguments` 别名、字符串 `args`、未知工具提示、动作与代码块混用/空代码块/超长代码的 `max_format_retries` 修复循环；Skill 头或描述校验错误带针对性提示，并至少重试 2 次；
 - 原生硬件：生成代码可直接 `import machine`，使用 `Pin`/`SPI`/`I2C`/`UART`/`PWM`/`ADC`/`TouchPad`/`RTC`/`time_pulse_us` 和 `neopixel`；执行器不再注入 `api`；
 - `skill` 提案解析、保存确认和本地事件；
 - `MEMORY.md` 创建、追加、删除、替换、清空和始终加载；
-- 自动模式：`auto_run` 只执行新生成代码，自动反馈循环受 `max_turns` 限制（默认 32）；`/auto turns N` 和网页“设置 → Harness 行为”可调整；`max_tool_calls`（默认 16，范围 1–64）同样可在该页调整；
+- 自动模式：`auto_run` 只执行新生成代码，自动反馈循环受 `max_turns` 限制（默认 64）；`/auto turns N` 和网页“设置 → Harness 行为”可调整；`max_tool_calls`（默认 64，范围 1–128）同样可在该页调整；
 - `__skill` 内置工具：`list`/`read` 按需读取 Skill 目录和正文，`delete` 在用户明确要求时删除 Skill 目录；
 - `__workspace` 内置工具：路径穿越、容量/数量限制、tmp 启动清理；
 - `__search`：只有 `auto` / `bing` 两种设置；`auto` 跟随模型 API 选择 Anthropic `web_search`、OpenAI Responses `web_search`、DeepSeek `deepseek_web_search`（Messages/Chat Completions 两种协议，关闭 thinking）或 Bing；count 上限、结果格式、输出/答案截断和 HTTP 错误；原生搜索失败回退 Bing；Bing RSS 解析、HTML 解析、实体解码、转义标签与 `<` 比较的区分；
@@ -56,7 +56,7 @@
 - 状态与历史：pending 清理竞态不返回 500，历史字符预算优先保留最新消息，历史条目返回绝对 `index`/`kind`，`backgrounds` 列表和单任务结果字段有界；
 - 串口：CRLF/LFCR 配对只吞一次，LF-only 和 CR-only 的连续空行必须保留；
 - Web UI：桌面可收起的侧边栏和手机抽屉、分组展开/收起、当前栏目高亮；对话输入框以 `/` 开头直接执行命令，不再有独立命令页；thinking、工具调用/结果、代码围栏、正文、执行结果、问题卡、Skill 提案和代码确认卡各自独立气泡；刷新历史用同一套拆分规则，工具密集的历史仍保留最近 reasoning（observation 每条最多 2048 字符）；Thinking/AUTO 在输入框左侧紧凑排列，窄屏隐藏 Thinking 文字标签并按实际输入框高度调整底部留白；AUTO 开启确认和反馈保持；代码、执行输出和本地记录默认折叠，流式更新保留展开状态；CA 已安装时高级自定义默认收起，缺失时自动展开且不改变 TLS 验证默认值；顶栏不再有回退按钮，实时用户消息通过 `done.user_index` 添加回退按钮，手动停止后保留状态轮询并在设备回合结束时刷新历史补上，刷新历史后同样显示；状态/任务/Skill/文件/设置分区可独立加载，文件页只允许写 `/workspace`，系统文件只读，敏感文件不可读/下载；
-- 聊天与执行：auto off 代码卡、auto on 安全代码执行/反馈、无限循环阻止、Skill 永不自动保存、`max_turns`（默认 32）和 `/auto turns` 边界、手动 Run 只反馈一次、客户端断开在步骤间停止；代码卡被消费后旧按钮不复活、状态恢复不向流式回合插入旧卡片、`No pending code` 会清理死按钮并刷新；前台/后台 `mode` 分离、多个后台任务并发与排队、`/api/continue {"id"}` 只提交一次、自动继续卡片和回退按钮存在；设备自有回合（AUTO/定时/串口）在无本地流时也显示停止按钮并通过 `POST /api/stop` 协作取消；
+- 聊天与执行：auto off 代码卡、auto on 安全代码执行/反馈、无限循环阻止、Skill 永不自动保存、`max_turns`（默认 64）和 `/auto turns` 边界、手动 Run 只反馈一次、客户端断开在步骤间停止；代码卡被消费后旧按钮不复活、状态恢复不向流式回合插入旧卡片、`No pending code` 会清理死按钮并刷新；前台/后台 `mode` 分离、多个后台任务并发与排队、`/api/continue {"id"}` 只提交一次、自动继续卡片和回退按钮存在；设备自有回合（AUTO/定时/串口）在无本地流时也显示停止按钮并通过 `POST /api/stop` 协作取消；
 - 线程：`UIRouter` 线程隔离、`Executor.main_runner` 回主线程、worker executor 不回主线程、`Application.run_on_main/pump_main_request`、后台期间允许对话/前台执行但拒绝维护操作、停止单任务/全部任务、共享运行时的全局钩子恢复、协作钩子喂狗与非协作前台代码停止喂狗；
 - 网络：AP 启动/停止、AP 宽限、无管理密码不关 AP、断线开 AP、STA 重试、状态缓存；
 - 目标文件：`tests/test_background.py`、`test_schedule.py`、`test_schedule_tool.py`、`test_console_ui.py`、`test_executor.py`、`test_web_auth.py`、`test_web_http.py`、`test_web_app.py`、`test_web_ui.py`、`test_network_ap.py`。

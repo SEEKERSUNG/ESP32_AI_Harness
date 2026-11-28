@@ -49,7 +49,7 @@
 ```
 ````
 
-模型追加内容和替换内容都受 `memory_append_limit`（默认 512 字符）和总长度限制。`delete` 删除所有包含 `match` 的行；`replace` 要求恰好一行匹配，并用 `content` 重写该整行。模型修改记忆前应先 `read`。不要把 API Key、Wi-Fi 密码写进 MEMORY.md。
+模型追加内容和替换内容都受 `memory_append_limit`（默认 2048 字符）和总长度限制。`delete` 删除所有包含 `match` 的行；`replace` 要求恰好一行匹配，并用 `content` 重写该整行。模型修改记忆前应先 `read`。不要把 API Key、Wi-Fi 密码写进 MEMORY.md。
 
 ## 建议内容
 

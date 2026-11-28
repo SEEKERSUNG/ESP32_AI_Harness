@@ -40,6 +40,8 @@ api_provider = "anthropic"   # Anthropic Messages /v1/messages
 
 当前 Claude 模型（Opus 5.5、Sonnet 5.5、Fable 等）不接受 `budget_tokens`，也不接受关闭 thinking 的 `{"type":"disabled"}`。因此 `disabled` 只是不发送 thinking 参数，模型仍可能按其默认行为思考；需要更低成本时优先使用 `low` effort 或换更小的模型。
 
+内部请求可以覆盖配置的思考等级：上下文压缩摘要固定使用 `thinking=disabled`，DeepSeek 的 Anthropic 端点还会在原生搜索请求中显式关闭 thinking；思考等级的截断降级也可能把本次请求改成 `thinking_fallback`。串口模型结果会打印 `thinking: configured=..., this request used=...`，`/api/status.thinking` 同时返回配置值 `level`、最近一次实际值 `effective` 和是否被覆盖 `overridden`。DeepSeek 模型在请求了 thinking 但整轮没有返回 reasoning 文本时，也会给出提示，避免把“provider 忽略 thinking”误判成配置未生效。
+
 ## 流式解析
 
 支持 Anthropic SSE 事件：

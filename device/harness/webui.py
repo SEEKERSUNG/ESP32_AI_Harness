@@ -390,8 +390,8 @@ INDEX_HTML = r"""<!doctype html>
               <label class="check"><input id="cfgAutoFeedback" type="checkbox">自动反馈执行结果</label>
               <label class="check"><input id="cfgBackground" type="checkbox">后台执行代码（完成后自动继续对话）</label>
               <label class="field">同时运行的后台程序数（1-4）<input id="cfgBackgroundMax" type="number" min="1" max="4" step="1"></label>
-              <label class="field">自动反馈最大轮数（1-50）<input id="cfgMaxTurns" type="number" min="1" max="50" step="1"></label>
-              <label class="field">单回合工具调用上限（1-64）<input id="cfgMaxToolCalls" type="number" min="1" max="64" step="1"></label>
+              <label class="field">自动反馈最大轮数（1-128）<input id="cfgMaxTurns" type="number" min="1" max="128" step="1"></label>
+              <label class="field">单回合工具调用上限（1-128）<input id="cfgMaxToolCalls" type="number" min="1" max="128" step="1"></label>
               <label class="field">上下文长度（tokens，1024-2000000）<input id="cfgContextTokens" type="number" min="1024" max="2000000" step="1024"></label>
               <label class="field">自动压缩阈值（tokens，需小于上下文长度）<input id="cfgAutoCompactTokens" type="number" min="1024" max="2000000" step="1024"></label>
               <label class="check"><input id="cfgAutoCompact" type="checkbox">启用自动压缩</label>
@@ -598,6 +598,10 @@ body.sidebar-collapsed .composer{left:0}
 .chat-log:empty{min-height:0;padding:0}
 .turn{display:flex;flex-direction:column;gap:6px;width:100%}
 .turn-answer{display:flex;flex-direction:column;gap:6px;width:100%}
+.answer-bubble{display:flex;flex-direction:column;gap:8px}
+.code-segment{border-left:3px solid var(--accent);background:var(--panel-soft);border-radius:var(--radius-sm);padding:4px 8px 6px;font-family:var(--font-mono);font-size:13px}
+.code-segment .bubble-label{margin-bottom:2px}
+.code-segment details.collapsible{margin:2px 0 0;background:var(--code-bg)}
 .bubble{position:relative;max-width:min(100%,820px);padding:8px 11px;border-radius:12px;background:var(--bot-bubble);border:1px solid var(--line);box-shadow:var(--shadow-sm);white-space:pre-wrap;word-break:break-word;line-height:1.55;font-size:14.5px}
 .bubble.user{background:var(--user-bubble);border-color:var(--user-border);margin-left:auto;border-bottom-right-radius:4px}
 .bubble.assistant{border-bottom-left-radius:4px}
@@ -620,6 +624,25 @@ body.sidebar-collapsed .composer{left:0}
 .bubble pre,.bubble code{font-family:var(--font-mono);background:var(--code-bg);border-radius:6px}
 .bubble pre{padding:10px 12px;overflow:auto;white-space:pre-wrap;border:1px solid var(--line);color:var(--code-text)}
 .bubble code{padding:1px 5px;font-size:.9em}
+.markdown-body{white-space:normal}
+.markdown-body>*:first-child{margin-top:0}
+.markdown-body>*:last-child{margin-bottom:0}
+.markdown-body p{margin:0 0 8px}
+.markdown-body h1,.markdown-body h2,.markdown-body h3,.markdown-body h4,.markdown-body h5,.markdown-body h6{margin:12px 0 6px;line-height:1.3;font-weight:700}
+.markdown-body h1{font-size:1.45em}
+.markdown-body h2{font-size:1.3em}
+.markdown-body h3{font-size:1.16em}
+.markdown-body h4,.markdown-body h5,.markdown-body h6{font-size:1.05em}
+.markdown-body ul,.markdown-body ol{margin:2px 0 8px;padding-left:22px}
+.markdown-body li{margin:2px 0}
+.markdown-body blockquote{margin:6px 0;padding:3px 10px;border-left:3px solid var(--line-strong);color:var(--muted)}
+.markdown-body hr{border:0;border-top:1px solid var(--line);margin:10px 0}
+.markdown-body a{color:var(--accent);text-decoration:underline}
+.markdown-body del{color:var(--muted)}
+.markdown-body table{border-collapse:collapse;display:block;overflow:auto;max-width:100%;margin:6px 0}
+.markdown-body th,.markdown-body td{border:1px solid var(--line);padding:4px 8px;text-align:left;vertical-align:top}
+.markdown-body th{background:var(--panel-soft);font-weight:700}
+.markdown-body strong{font-weight:700}
 .turn-answer .bubble{max-width:min(100%,820px)}
 details.reasoning,details.collapsible{margin:4px 0;color:var(--muted);font-size:13px;border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--panel-soft);overflow:hidden}
 details summary{cursor:pointer;padding:8px 10px;font-weight:600;color:var(--text-soft);list-style:none;display:flex;align-items:center;gap:8px;min-height:36px;user-select:none}
@@ -960,7 +983,15 @@ function renderStatusScreen(status){
   setText($('statusSessions'),status.sessions==null?'-':status.sessions);
   var wifiError=$('statusWifiError');
   if(status.wifi_error){setText(wifiError,'Wi-Fi: '+status.wifi_error);show(wifiError,true);}else{show(wifiError,false);}
-  setText($('statusVersion'),'版本 '+(status.version||'-')+' · 固件运行正常时 heap 会随请求波动');
+  var thinkingState=status.thinking||{};
+  var thinkingText=' · thinking '+(thinkingState.level||'-');
+  if(thinkingState.effective&&thinkingState.effective!==thinkingState.level){
+    thinkingText+='（本次 '+(thinkingState.effective||'-')+'）';
+  }
+  if(thinkingState.effective&&thinkingState.effective!=='disabled'&&thinkingState.last_reasoning_chars===0){
+    thinkingText+='（最近一次未返回 thinking 文本）';
+  }
+  setText($('statusVersion'),'版本 '+(status.version||'-')+thinkingText+' · 固件运行正常时 heap 会随请求波动');
   var bar=$('contextBar'); if(bar) bar.style.width=percent+'%';
   setText($('contextText'),'消息 '+((history.messages==null)?'-':history.messages)+' 条 · '+
     ((history.chars==null)?'-':history.chars)+' 字符 · 约 '+
@@ -1112,7 +1143,9 @@ function collapsedMessage(summaryText, text){
 function blockLabel(language){
   var labels={python:'Python 代码',py:'Python 代码',micropython:'MicroPython 代码',
     tool:'工具调用',tool_call:'工具调用',toolcall:'工具调用','tool-call':'工具调用',
-    skill:'Skill 提案'};
+    skill:'Skill 提案',text:'文本',txt:'文本',plain:'文本',
+    plaintext:'文本',json:'JSON',bash:'Shell',sh:'Shell',
+    javascript:'JavaScript',js:'JavaScript',html:'HTML',css:'CSS'};
   return labels[language.toLowerCase()] || language || '代码';
 }
 function assistantSegments(text){
@@ -1137,30 +1170,183 @@ function assistantSegments(text){
   }
   return segments;
 }
+function escapeHtmlText(text){
+  return String(text==null?'':text)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function safeMarkdownUrl(url){
+  var value=String(url||'');
+  return /^(https?:\/\/|mailto:|\/(?!\/))/i.test(value)?value:'';
+}
+function markdownInline(text){
+  var tokens=[];
+  var source=escapeHtmlText(text);
+  source=source.replace(/`([^`\n]+)`/g,function(_,code){
+    tokens.push('<code>'+code+'</code>');
+    return '\u0000'+(tokens.length-1)+'\u0000';
+  });
+  source=source.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g,function(all,alt,url){
+    var safe=safeMarkdownUrl(url);
+    if(!safe) return all;
+    return '<a href="'+safe+'" target="_blank" rel="noopener noreferrer">'+
+      (alt||'image')+'</a>';
+  });
+  source=source.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g,function(all,label,url){
+    var safe=safeMarkdownUrl(url);
+    if(!safe) return all;
+    return '<a href="'+safe+'" target="_blank" rel="noopener noreferrer">'+label+'</a>';
+  });
+  source=source.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+  source=source.replace(/__([^_]+)__/g,'<strong>$1</strong>');
+  source=source.replace(/~~([^~]+)~~/g,'<del>$1</del>');
+  source=source.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g,'$1<em>$2</em>');
+  source=source.replace(/(^|[^_\w])_([^_\n]+)_(?!\w)/g,'$1<em>$2</em>');
+  source=source.replace(/\u0000(\d+)\u0000/g,function(_,i){
+    return tokens[Number(i)];
+  });
+  return source;
+}
+function splitMarkdownRow(line){
+  var value=String(line||'').trim();
+  if(value.charAt(0)==='|') value=value.slice(1);
+  if(value.charAt(value.length-1)==='|') value=value.slice(0,-1);
+  return value.split('|');
+}
+function isMarkdownTableSeparator(line){
+  if(!line||line.indexOf('-')<0||line.indexOf('|')<0) return false;
+  var cells=splitMarkdownRow(line);
+  if(!cells.length) return false;
+  for(var i=0;i<cells.length;i++){
+    if(!/^:?-{3,}:?$/.test(cells[i].trim())) return false;
+  }
+  return true;
+}
+function isMarkdownTableStart(lines,index){
+  return index+1<lines.length&&lines[index].indexOf('|')>=0&&
+    isMarkdownTableSeparator(lines[index+1]);
+}
+function isMarkdownListLine(line){
+  return /^\s*([-*+]|\d+[.)])\s+/.test(line);
+}
+function isMarkdownRule(line){
+  return /^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line);
+}
+function renderMarkdown(el,text){
+  var lines=String(text||'').replace(/\r\n?/g,'\n').split('\n');
+  var i=0;
+  while(i<lines.length){
+    var line=lines[i];
+    if(!line.trim()){i++;continue;}
+    var heading=line.match(/^(#{1,6})\s+(.*)$/);
+    if(heading){
+      var h=document.createElement('h'+heading[1].length);
+      h.innerHTML=markdownInline(heading[2]);
+      el.appendChild(h); i++; continue;
+    }
+    if(isMarkdownRule(line)){
+      el.appendChild(document.createElement('hr')); i++; continue;
+    }
+    if(/^\s*>/.test(line)){
+      var quoteLines=[];
+      while(i<lines.length&&/^\s*>/.test(lines[i])){
+        quoteLines.push(lines[i].replace(/^\s*>\s?/,''));
+        i+=1;
+      }
+      var quote=document.createElement('blockquote');
+      renderMarkdown(quote,quoteLines.join('\n'));
+      el.appendChild(quote); continue;
+    }
+    if(isMarkdownListLine(line)){
+      var ordered=/^\s*\d+[.)]\s+/.test(line);
+      var list=document.createElement(ordered?'ol':'ul');
+      while(i<lines.length){
+        var item=ordered
+          ?lines[i].match(/^\s*\d+[.)]\s+(.*)$/)
+          :lines[i].match(/^\s*[-*+]\s+(.*)$/);
+        if(!item) break;
+        var li=document.createElement('li');
+        li.innerHTML=markdownInline(item[1]);
+        list.appendChild(li); i+=1;
+      }
+      el.appendChild(list); continue;
+    }
+    if(isMarkdownTableStart(lines,i)){
+      var table=document.createElement('table');
+      var thead=document.createElement('thead');
+      var headRow=document.createElement('tr');
+      var headers=splitMarkdownRow(line);
+      for(var c=0;c<headers.length;c++){
+        var th=document.createElement('th');
+        th.innerHTML=markdownInline(headers[c].trim());
+        headRow.appendChild(th);
+      }
+      thead.appendChild(headRow); table.appendChild(thead);
+      var tbody=document.createElement('tbody');
+      i+=2;
+      while(i<lines.length&&lines[i].trim()&&lines[i].indexOf('|')>=0){
+        var cells=splitMarkdownRow(lines[i]);
+        var row=document.createElement('tr');
+        for(var k=0;k<headers.length;k++){
+          var td=document.createElement('td');
+          td.innerHTML=markdownInline((cells[k]||'').trim());
+          row.appendChild(td);
+        }
+        tbody.appendChild(row); i+=1;
+      }
+      table.appendChild(tbody); el.appendChild(table); continue;
+    }
+    var paragraph=[];
+    while(i<lines.length&&lines[i].trim()){
+      if(paragraph.length&&(isMarkdownListLine(lines[i])||
+          /^\s*>/.test(lines[i])||/^#{1,6}\s+/.test(lines[i])||
+          isMarkdownRule(lines[i])||isMarkdownTableStart(lines,i))) break;
+      paragraph.push(lines[i]); i+=1;
+    }
+    var p=document.createElement('p');
+    p.innerHTML=markdownInline(paragraph.join('\n')).replace(/\n/g,'<br>');
+    el.appendChild(p);
+  }
+}
+function scheduleAssistantRender(b){
+  if(b.renderTimer) return;
+  b.renderTimer=setTimeout(function(){
+    b.renderTimer=null;
+    var stick=pageNearBottom();
+    renderAssistantBody(b);
+    scrollIfStick(stick);
+  },24);
+}
 function renderAssistantBody(b){
+  if(b.renderTimer){clearTimeout(b.renderTimer);b.renderTimer=null;}
   var openStates=[];
   var oldDetails=b.el.querySelectorAll('details');
   for(var i=0;i<oldDetails.length;i++) openStates.push(oldDetails[i].open===true);
   b.el.textContent=''; b.body=null; b.tailKind='';
+  // One assistant message stays one bubble. Text and collapsible code
+  // segments are laid out inside it instead of becoming sibling bubbles.
+  var bubble=document.createElement('div');
+  bubble.className='bubble assistant answer-bubble';
+  b.el.appendChild(bubble);
   var segments=assistantSegments(b.text);
   var detailIndex=0;
   for(var s=0;s<segments.length;s++){
     var segment=segments[s];
     if(segment.kind==='text'){
       if(!segment.text||!segment.text.trim()) continue;
-      var el=document.createElement('div'); el.className='bubble assistant';
-      var body=document.createElement('div'); body.className='bubble-body';
-      body.textContent=segment.text; el.appendChild(body);
-      b.el.appendChild(el); b.body=body; b.tailKind='text';
+      var body=document.createElement('div');
+      body.className='bubble-body markdown-body';
+      renderMarkdown(body,segment.text); bubble.appendChild(body);
+      b.body=body; b.tailKind='text';
     } else {
-      var codeEl=document.createElement('div'); codeEl.className='bubble assistant code-bubble';
+      var codeEl=document.createElement('div'); codeEl.className='code-segment';
       var label=document.createElement('div'); label.className='bubble-label';
       label.textContent=segment.label; codeEl.appendChild(label);
       var summary=(segment.open?'代码接收中（':'展开代码（')+segment.content.length+' 字符）';
       codeEl.appendChild(collapsibleBlock(
         summary,segment.content,openStates[detailIndex]===true));
       detailIndex+=1;
-      b.el.appendChild(codeEl); b.tailKind='code'; b.body=null;
+      bubble.appendChild(codeEl); b.tailKind='code'; b.body=null;
     }
   }
   b.fenceCount=b.text.split('```').length-1;
@@ -1178,13 +1364,12 @@ function appendAssistantText(text){
   var b=ensureAssistant();
   b.text+=chunk;
   var fences=b.text.split('```').length-1;
-  if(fences%2===0&&chunk.indexOf('```')<0&&b.tailKind==='text'&&b.body){
-    b.body.appendChild(document.createTextNode(chunk));
-    b.fenceCount=fences;
-    scrollIfStick(stick);
-    return;
+  if(chunk.indexOf('```')>=0||fences!==b.fenceCount||!b.body){
+    renderAssistantBody(b);
+  } else {
+    // Coalesce Markdown re-renders during a fast token stream.
+    scheduleAssistantRender(b);
   }
-  renderAssistantBody(b);
   scrollIfStick(stick);
 }
 function setAssistantText(text){
@@ -1446,6 +1631,8 @@ function handleEvent(ev){
     if(ev.tail_gap_ms) text+=' 尾间隔='+ev.tail_gap_ms+'ms';
     if(ev.input_tokens||ev.output_tokens) text+=' tokens='+(ev.input_tokens||0)+'/'+(ev.output_tokens||0);
     if(ev.cache_read_tokens) text+=' cache_read='+ev.cache_read_tokens;
+    if(ev.thinking_level) text+=' thinking='+ev.thinking_level;
+    if(ev.thinking_overridden) text+='(配置 '+ev.thinking_configured+')';
     if(ev.error) text+=' '+ev.error;
     modelMeta(text);
     return;
@@ -2564,8 +2751,8 @@ function loadConfig(){
     $('cfgAutoFeedback').checked=!!cfg.auto_feedback;
     $('cfgBackground').checked=cfg.background_execution!==false;
     $('cfgBackgroundMax').value=cfg.background_max_jobs||4;
-    $('cfgMaxTurns').value=cfg.max_turns||32;
-    $('cfgMaxToolCalls').value=cfg.max_tool_calls||16;
+    $('cfgMaxTurns').value=cfg.max_turns||64;
+    $('cfgMaxToolCalls').value=cfg.max_tool_calls||64;
     $('cfgContextTokens').value=cfg.context_tokens||200000;
     $('cfgAutoCompactTokens').value=cfg.auto_compact_tokens||150000;
     $('cfgAutoCompact').checked=cfg.auto_compact!==false;
@@ -2767,8 +2954,8 @@ document.addEventListener('DOMContentLoaded',function(){
       show_thinking:$('cfgShowThinking').checked,
       background_execution:$('cfgBackground').checked,
       background_max_jobs:parseInt($('cfgBackgroundMax').value,10)||4,
-      max_turns:parseInt($('cfgMaxTurns').value,10)||32,
-      max_tool_calls:parseInt($('cfgMaxToolCalls').value,10)||16,
+      max_turns:parseInt($('cfgMaxTurns').value,10)||64,
+      max_tool_calls:parseInt($('cfgMaxToolCalls').value,10)||64,
       context_tokens:contextTokens,
       auto_compact_tokens:compactTokens,
       auto_compact:$('cfgAutoCompact').checked,

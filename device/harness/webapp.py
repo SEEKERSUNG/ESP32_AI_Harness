@@ -258,6 +258,11 @@ class WebTurnSink:
             "reasoning_chars": getattr(llm, "last_reasoning_chars", 0),
             "content_chars": getattr(llm, "last_content_chars", 0),
             "streamed": bool(getattr(llm, "last_streamed", False)),
+            "thinking_level": getattr(llm, "last_thinking_level", ""),
+            "thinking_configured": getattr(
+                llm, "last_thinking_configured", ""),
+            "thinking_overridden": bool(
+                getattr(llm, "last_thinking_overridden", False)),
             "input_tokens": getattr(llm, "last_input_tokens", 0),
             "output_tokens": getattr(llm, "last_output_tokens", 0),
             "cache_read_tokens": getattr(llm, "last_cache_read_tokens", 0),
@@ -641,6 +646,16 @@ class WebApp:
             "thinking": {
                 "level": self.app.config.get("thinking_level", "high"),
                 "show": bool(self.app.config.get("show_thinking", False)),
+                # What the most recent request actually sent, and whether an
+                # internal override (compaction summary) changed it.
+                "effective": getattr(
+                    self.app.llm, "last_thinking_level", ""),
+                "configured": getattr(
+                    self.app.llm, "last_thinking_configured", ""),
+                "overridden": bool(
+                    getattr(self.app.llm, "last_thinking_overridden", False)),
+                "last_reasoning_chars": getattr(
+                    self.app.llm, "last_reasoning_chars", 0),
             },
             "mcp": {
                 "enabled": bool(self.app.config.get("mcp_enabled", True)),
@@ -733,8 +748,8 @@ class WebApp:
             "auto_compact": bool(self.app.config.get("auto_compact", True)),
             "auto_compact_tokens": self.app.config.get(
                 "auto_compact_tokens", 150000),
-            "max_turns": self.app.config.get("max_turns", 32),
-            "max_tool_calls": self.app.config.get("max_tool_calls", 16),
+            "max_turns": self.app.config.get("max_turns", 64),
+            "max_tool_calls": self.app.config.get("max_tool_calls", 64),
             "input_limit": self.app.config.get("input_limit", 2000),
             "stream_header_timeout": self.app.config.get("stream_header_timeout", 300),
             "stream_idle_timeout": self.app.config.get("stream_idle_timeout", 300),
@@ -1156,8 +1171,8 @@ class WebApp:
                 self.app.config.set(
                     "auto_compact", _boolean(body, "auto_compact"), save=False)
             timeout_fields = (
-                ("max_turns", 1, 50),
-                ("max_tool_calls", 1, 64),
+                ("max_turns", 1, 128),
+                ("max_tool_calls", 1, 128),
                 ("stream_header_timeout", 1, 3600),
                 ("stream_idle_timeout", 1, 3600),
                 ("stream_event_idle_timeout", 0, 3600),

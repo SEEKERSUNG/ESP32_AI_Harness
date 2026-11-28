@@ -19,6 +19,14 @@ class MemoryTests(unittest.TestCase):
             with self.assertRaises(Exception):
                 memory.append("x" * 40)
 
+    def test_memory_append_default_allows_a_normal_note(self):
+        with tempfile.TemporaryDirectory() as root:
+            memory = MemoryStore(root, DummyConfig())
+            text = "Anthropic tool_result 必须紧跟 tool_use；" + ("x" * 500)
+            result = memory.append(text)
+            self.assertEqual(len(text), result["chars"])
+            self.assertIn(text, memory.load())
+
     def test_memory_clear(self):
         with tempfile.TemporaryDirectory() as root:
             memory = MemoryStore(root, DummyConfig())

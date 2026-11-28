@@ -8,6 +8,79 @@ class WorkspaceError(Exception):
     pass
 
 
+def _word_set(value):
+    words = {}
+    current = []
+    for char in value:
+        if ("a" <= char <= "z" or "A" <= char <= "Z"
+                or "0" <= char <= "9" or char == "_"):
+            current.append(char)
+        else:
+            if current:
+                words["".join(current)] = 1
+                current = []
+    if current:
+        words["".join(current)] = 1
+    return words
+
+
+def _common_prefix(left, right):
+    limit = min(len(left), len(right))
+    index = 0
+    while index < limit and left[index] == right[index]:
+        index += 1
+    return index
+
+
+def _common_suffix(left, right):
+    limit = min(len(left), len(right))
+    index = 0
+    while index < limit and left[-1 - index] == right[-1 - index]:
+        index += 1
+    return index
+
+
+def _clip_line(line, limit=160):
+    line = line.strip()
+    if len(line) <= limit:
+        return line
+    return line[:limit] + "..."
+
+
+def _nearby_lines(text, match, limit=3):
+    """Return the closest lines for a failed exact-text replace match."""
+    targets = []
+    for line in str(match).replace("\r\n", "\n").split("\n"):
+        line = line.strip()
+        if line:
+            targets.append(line)
+    if not targets:
+        return []
+    target = targets[0]
+    target_words = _word_set(target)
+    scored = []
+    for number, line in enumerate(text.split("\n"), 1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped == target:
+            score = 100000
+        else:
+            words = _word_set(stripped)
+            overlap = 0
+            for word in target_words:
+                if word in words:
+                    overlap += 1
+            score = (overlap * 20
+                     + _common_prefix(stripped, target)
+                     + _common_suffix(stripped, target) // 2)
+        if score > 0:
+            scored.append((score, number, stripped))
+    scored.sort()
+    scored.reverse()
+    return [(number, line) for score, number, line in scored[:limit]]
+
+
 class Workspace:
     def __init__(self, root="/", config=None, clean_tmp=False):
         self.config = config
@@ -277,8 +350,15 @@ class Workspace:
         text = bundle["text"]
         count = text.count(match)
         if count == 0:
-            raise WorkspaceError(
-                "match not found in %s" % self.display(clean))
+            message = "match not found in %s" % self.display(clean)
+            nearby = _nearby_lines(text, match)
+            if nearby:
+                message += (
+                    "; closest lines (check whitespace/indentation; "
+                    "replace requires the exact text):")
+                for number, line in nearby:
+                    message += "\n  %s: %s" % (number, _clip_line(line))
+            raise WorkspaceError(message)
         if not all and count != 1:
             raise WorkspaceError(
                 "match occurs %s times in %s; make it unique or set all=true"

@@ -28,11 +28,11 @@ class MemoryStore:
             return 8192
 
     def append_limit(self):
-        value = self.config.get("memory_append_limit", 512) if self.config is not None else 512
+        value = self.config.get("memory_append_limit", 2048) if self.config is not None else 2048
         try:
             return max(32, int(value))
         except (TypeError, ValueError):
-            return 512
+            return 2048
 
     def load(self):
         try:
