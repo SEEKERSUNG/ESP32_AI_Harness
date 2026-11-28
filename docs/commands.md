@@ -1,6 +1,6 @@
 # 命令手册
 
-所有命令从 `/` 开始；其他输入会作为自然语言任务发送给本地 Agent。串口仍是完整控制面；网页命令页接受除少数交互表单和重启类操作之外的命令，生成/工作区代码通过主线程 handoff 执行。主机侧推荐用 `python tools/serial_console.py --port <PORT>` 连接；它是通用串口终端，按 UTF-8 字符边界限速发送，避免长中文输入被 UART RX 缓冲截断。Skill 名称只能包含字母、数字、下划线和连字符，最长 32 字符。
+所有命令从 `/` 开始；其他输入会作为自然语言任务发送给本地 Agent。串口仍是完整控制面；网页对话输入框以 `/` 开头时直接执行命令，接受除少数交互表单和重启类操作之外的命令，生成/工作区代码通过主线程 handoff 执行。主机侧推荐用 `python tools/serial_console.py --port <PORT>` 连接；它是通用串口终端，按 UTF-8 字符边界限速发送，避免长中文输入被 UART RX 缓冲截断。Skill 名称只能包含字母、数字、下划线和连字符，最长 32 字符。
 
 ## 初始化与状态
 
@@ -35,11 +35,11 @@ SSID: ESP32-Harness-XXXX
 URL:  http://192.168.4.1/
 ```
 
-网页登录后可对话、执行命令页 `/` 命令、查看历史和修改 Wi-Fi/模型/API Key/CA/管理密码。网页与串口共享会话，模型回合互斥；网页触发的代码仍在串口主线程执行，串口只读命令在网页回合期间可用。
+网页登录后可对话（输入框直接执行 `/` 命令）、通过侧边栏查看状态/任务/Skill/文件和修改 Wi-Fi/模型/API Key/CA/管理密码。网页与串口共享会话，模型回合互斥；网页触发的代码仍在串口主线程执行，串口只读命令在网页回合期间可用。
 
 网页 `/api/command` 接受所有**非交互**命令，包括 `/status`、`/history`、`/context`、`/summary`、`/code`、`/discard`、`/undo`、`/rewind`、`/skills`、`/skill-show`、`/skill-delete`、`/thinking`、`/auto`、`/native`、`/search`、`/test`、`/compact`、`/clear`、`/memory`、`/workspace`（`run` 除外）、`/mcp`、`/http`、`/background`、`/bg`、`/schedule` 和只读 `/web`。需要写文件或改变风险设置的命令会在网页弹出确认对话框；确认后重试执行。
 
-`/run`、`/run bg`、`/workspace run` 和 `/continue` 也可从网页命令页执行；生成/工作区代码通过主线程 handoff 运行，执行前浏览器会请求确认。以下命令仍需要第二次输入或重启设备，使用对应的专用表单/按钮（`/repl` 仅限串口）：
+`/run`、`/run bg`、`/workspace run` 和 `/continue` 也可从网页对话输入框以 `/` 开头执行；生成/工作区代码通过主线程 handoff 运行，执行前浏览器会请求确认。以下命令仍需要第二次输入或重启设备，使用对应的专用表单/按钮（`/repl` 仅限串口）：
 
 - `/setup`、`/wifi`、`/model`、`/ca`、`/web reset-password`：使用设置页表单；
 - `/factory-reset`：使用网页恢复出厂设置表单，需要管理密码和 `confirm:true`。
@@ -165,7 +165,7 @@ Skill 是 Markdown 指令包，放在 `/skills/<name>/SKILL.md`，不是可执�
 
 ## 内置工具
 
-Harness 不再支持模型自定义可执行 Tool。模型通过原生 function calling 调用内置工具：`__skill`、`__workspace`、`__memory`、`__search`、`__ask`、`__http`、`__background`、`__time` 和 `__schedule`。OpenAI 兼容端点使用 `tools`，Anthropic 使用 `input_schema`；工具结果以原生 assistant/tool 消息回传。端点拒绝原生工具时自动回退到文本 `tool` 块，也可用 `/native off` 强制使用文本协议。单次任务最多 `max_tool_calls` 次连续调用（默认 16）。`__background` 只查看/请求停止后台任务；`__time` 读取 RTC 并按配置时区返回本地时间/UTC，也可按用户明确要求写入 RTC 或修改显示时区；`__schedule` 管理持久定时任务；内置工具直接读写 Skill、Workspace、MEMORY、Search/HTTP、定时任务或后台状态，不加载任意本地代码。
+Harness 不再支持模型自定义可执行 Tool。模型通过原生 function calling 调用内置工具：`__skill`、`__workspace`、`__memory`、`__search`、`__ask`、`__http`、`__background`、`__time` 和 `__schedule`。OpenAI 兼容端点使用 `tools`，Anthropic 使用 `input_schema`；工具结果以原生 assistant/tool 消息回传。端点拒绝原生工具时自动回退到文本 `tool` 块，也可用 `/native off` 强制使用文本协议。单次任务最多 `max_tool_calls` 次连续调用（默认 16，可在网页“设置 → Harness 行为”调整为 1–64）。`__background` 只查看/请求停止后台任务；`__time` 读取 RTC 并按配置时区返回本地时间/UTC，也可按用户明确要求写入 RTC 或修改显示时区；`__schedule` 管理持久定时任务；内置工具直接读写 Skill、Workspace、MEMORY、Search/HTTP、定时任务或后台状态，不加载任意本地代码。
 
 `__time` 用于回答“现在几点/今天几号”，直接读取 `machine.RTC().datetime()`，不依赖模型猜测：
 
@@ -237,7 +237,7 @@ AI 可通过内置 `__background` 工具管理多个任务：
 
 ## 定时任务
 
-定时任务保存在 `/state/schedules.json`，按设备 RTC 的本地时间（`timezone_offset_minutes`，默认 UTC+8）执行。RTC 必须有效；设备重启后尚未同步 NTP、年份异常时不会触发任务。网页“任务”标签页可查看后台任务和定时任务、创建/编辑/删除/启停/立即运行；串口和网页命令页使用 `/schedule` 管理。
+定时任务保存在 `/state/schedules.json`，按设备 RTC 的本地时间（`timezone_offset_minutes`，默认 UTC+8）执行。RTC 必须有效；设备重启后尚未同步 NTP、年份异常时不会触发任务。网页“任务 → 自动化任务”可创建/编辑/删除/启停/立即运行；串口和网页输入框使用 `/schedule` 管理。
 
 任务分两类：
 

@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from unittest import mock
@@ -11,6 +12,7 @@ from harness.console import LiveTurn, UIRouter, command_is_exclusive
 from harness.llm import LLMStreamCancelled
 from harness.mcp import MCPManager, MCPStore
 from harness.schedule import ScheduleStore, Scheduler
+from harness.skills import SkillStore
 from harness.web import WebError, WebRequest
 from harness.webapp import (
     CommandCaptureSink,
@@ -19,6 +21,7 @@ from harness.webapp import (
     WebTurnSink,
 )
 from harness.webauth import WebAuth, parse_cookie
+from harness.workspace import Workspace
 
 
 class FakeSerial:
@@ -285,6 +288,8 @@ class FakeApp:
         self.schedule_now = 1795500000
         self.llm = FakeLLM()
         self.agent = FakeAgent(self)
+        self.skills = SkillStore(root)
+        self.workspace = Workspace(root, self.config)
         self.executor = object()
         self.ui = UIRouter(FakeSerial())
         self.turn_lock = _thread.allocate_lock()
@@ -736,6 +741,11 @@ class WebAppTests(unittest.TestCase):
         self.web.handle(request_value, writer)
         return writer
 
+    def error_call(self, request_value):
+        with self.assertRaises(WebError) as raised:
+            self.call(request_value)
+        return raised.exception
+
     def token(self):
         return self.auth.set_password("admin-password")
 
@@ -943,6 +953,33 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(3, history.json["total_messages"])
         self.assertEqual(1, history.json["shown_messages"])
 
+    def test_history_keeps_recent_reasoning_in_tool_heavy_turns(self):
+        token = self.token()
+        history = [{"role": "user", "content": "task", "kind": "user"}]
+        for index in range(20):
+            history.append({
+                "role": "user", "kind": "observation",
+                "content": "Local tool result for 'x':\n" + ("o" * 9000),
+            })
+            history.append({
+                "role": "assistant", "kind": "assistant",
+                "content": "round %s" % index,
+                "reasoning": "thinking %s" % index,
+            })
+        self.app.agent.history = history
+        self.app.config.values["web_history_chars"] = 65536
+        view = self.call(request("GET", "/api/history", token=token))
+        messages = view.json["messages"]
+        assistant = [item for item in messages if item["role"] == "assistant"]
+        self.assertTrue(assistant)
+        self.assertTrue(any(item["reasoning"] for item in assistant),
+                        "recent reasoning must survive tool-heavy history")
+        self.assertIn("thinking 19", [item["reasoning"] for item in assistant])
+        for item in messages:
+            if item["kind"] == "observation":
+                self.assertLessEqual(len(item["content"]), 2048)
+                self.assertTrue(item["truncated"])
+
     def test_history_exposes_message_kind_and_absolute_index(self):
         token = self.token()
         self.app.agent.history = [
@@ -960,6 +997,172 @@ class WebAppTests(unittest.TestCase):
                          [item["kind"] for item in history.json["messages"]])
         self.assertEqual("thinking about two",
                          history.json["messages"][1]["reasoning"])
+
+    def test_status_exposes_summary_chars_and_skill_context(self):
+        token = self.token()
+        self.app.agent.summary = "compressed context"
+        status = self.call(request("GET", "/api/status", token=token))
+        self.assertEqual(len("compressed context"),
+                         status.json["history"]["summary_chars"])
+
+    def test_skills_api_lists_and_reads_bundles(self):
+        token = self.token()
+        self.app.skills.save("demo", "Demo skill", "Use this body.")
+        listing = self.call(request("GET", "/api/skills", token=token))
+        self.assertEqual(200, listing.status)
+        self.assertEqual(["demo"],
+                         [item["name"] for item in listing.json["skills"]])
+        self.assertEqual("Demo skill",
+                         listing.json["skills"][0]["description"])
+        detail = self.call(request(
+            "GET", "/api/skills", token=token, query={"name": "demo"}))
+        self.assertEqual(200, detail.status)
+        self.assertIn("Use this body.", detail.json["content"])
+        self.assertEqual("Demo skill", detail.json["description"])
+        with self.assertRaises(WebError) as missing:
+            self.call(request(
+                "GET", "/api/skills", token=token, query={"name": "missing"}))
+        self.assertEqual(404, missing.exception.status)
+
+    def test_files_api_lists_reads_and_writes_workspace(self):
+        token = self.token()
+        workspace = os.path.join(self.temp.name, "workspace")
+        with open(os.path.join(workspace, "note.txt"), "w",
+                  encoding="utf-8") as handle:
+            handle.write("hello file")
+        listing = self.call(request(
+            "GET", "/api/files", token=token, query={"path": "/workspace"}))
+        self.assertEqual(200, listing.status)
+        self.assertTrue(listing.json["writable"])
+        entries = {entry["name"]: entry for entry in listing.json["entries"]}
+        self.assertTrue(entries["note.txt"]["writable"])
+        self.assertTrue(entries["note.txt"]["editable"])
+        self.assertFalse(entries["note.txt"]["protected"])
+
+        read = self.call(request(
+            "GET", "/api/files/read", token=token,
+            query={"path": "/workspace/note.txt"}))
+        self.assertEqual("hello file", read.json["text"])
+        self.assertTrue(read.json["editable"])
+        self.assertFalse(read.json["truncated"])
+
+        written = self.call(request("POST", "/api/files/write", {
+            "path": "/workspace/note.txt", "content": "updated",
+        }, token=token))
+        self.assertEqual(200, written.status)
+        with open(os.path.join(workspace, "note.txt"),
+                  encoding="utf-8") as handle:
+            self.assertEqual("updated", handle.read())
+
+        uploaded = self.call(request("POST", "/api/files/upload", {
+            "path": "/workspace/new.txt", "content": "uploaded text",
+        }, token=token))
+        self.assertEqual(200, uploaded.status)
+        duplicate = self.error_call(request("POST", "/api/files/upload", {
+            "path": "/workspace/new.txt", "content": "again",
+        }, token=token))
+        self.assertEqual(400, duplicate.status)
+        overwritten = self.call(request("POST", "/api/files/upload", {
+            "path": "/workspace/new.txt", "content": "again",
+            "overwrite": True,
+        }, token=token))
+        self.assertEqual(200, overwritten.status)
+
+    def test_files_api_protects_system_and_sensitive_files(self):
+        token = self.token()
+        with open(os.path.join(self.temp.name, "secrets.json"), "w",
+                  encoding="utf-8") as handle:
+            handle.write('{"api_key":"secret"}')
+        with open(os.path.join(self.temp.name, "boot.py"), "w",
+                  encoding="utf-8") as handle:
+            handle.write("print('boot')")
+        root = self.call(request("GET", "/api/files", token=token,
+                                 query={"path": "/"}))
+        entries = {entry["name"]: entry for entry in root.json["entries"]}
+        self.assertTrue(entries["boot.py"]["protected"])
+        self.assertFalse(entries["boot.py"]["writable"])
+        self.assertTrue(entries["secrets.json"]["sensitive"])
+        self.assertFalse(root.json["writable"])
+
+        for path in ("/workspace/../secrets.json", "/a/../../secrets.json"):
+            rejected = self.error_call(request(
+                "GET", "/api/files/read", token=token,
+                query={"path": path}))
+            self.assertEqual(400, rejected.status)
+
+        secret_read = self.error_call(request(
+            "GET", "/api/files/read", token=token,
+            query={"path": "/secrets.json"}))
+        self.assertEqual(403, secret_read.status)
+        # FAT lookups are case-insensitive; mixed case must not bypass the
+        # secret-file block.
+        mixed_case = self.error_call(request(
+            "GET", "/api/files/read", token=token,
+            query={"path": "/SeCrEtS.json"}))
+        self.assertEqual(403, mixed_case.status)
+        secret_download = self.error_call(request(
+            "GET", "/api/files/download", token=token,
+            query={"path": "/secrets.json"}))
+        self.assertEqual(403, secret_download.status)
+
+        protected_write = self.error_call(request("POST", "/api/files/write", {
+            "path": "/boot.py", "content": "print('changed')",
+        }, token=token))
+        self.assertEqual(403, protected_write.status)
+        protected_upload = self.error_call(request("POST", "/api/files/upload", {
+            "path": "/boot.py", "content": "print('changed')",
+        }, token=token))
+        self.assertEqual(403, protected_upload.status)
+
+    def test_files_api_download_mkdir_rename_and_delete(self):
+        token = self.token()
+        workspace = os.path.join(self.temp.name, "workspace")
+        with open(os.path.join(workspace, "download.txt"), "w",
+                  encoding="utf-8") as handle:
+            handle.write("download body")
+        downloaded = self.call(request(
+            "GET", "/api/files/download", token=token,
+            query={"path": "/workspace/download.txt"}))
+        self.assertEqual(200, downloaded.status)
+        self.assertEqual(b"download body", downloaded.body)
+        self.assertEqual("application/octet-stream", downloaded.content_type)
+        self.assertTrue(any(name == "Content-Disposition"
+                            for name, _ in (downloaded.extra or [])))
+
+        created = self.call(request("POST", "/api/files/mkdir", {
+            "path": "/workspace/folder",
+        }, token=token))
+        self.assertEqual(200, created.status)
+        renamed = self.call(request("POST", "/api/files/rename", {
+            "path": "/workspace/folder", "name": "renamed",
+        }, token=token))
+        self.assertEqual(200, renamed.status)
+        self.assertTrue(os.path.isdir(os.path.join(workspace, "renamed")))
+        with open(os.path.join(workspace, "renamed", "x.txt"), "w",
+                  encoding="utf-8") as handle:
+            handle.write("x")
+        nonempty = self.error_call(request("POST", "/api/files/delete", {
+            "path": "/workspace/renamed",
+        }, token=token))
+        self.assertEqual(409, nonempty.status)
+        child_delete = self.call(request("POST", "/api/files/delete", {
+            "path": "/workspace/renamed/x.txt",
+        }, token=token))
+        self.assertEqual(200, child_delete.status)
+        empty_delete = self.call(request("POST", "/api/files/delete", {
+            "path": "/workspace/renamed",
+        }, token=token))
+        self.assertEqual(200, empty_delete.status)
+
+    def test_files_body_limit_allows_workspace_sized_upload(self):
+        token = self.token()
+        self.assertGreater(self.web.body_limit(), 32768)
+        content = "x" * int(self.app.config.get("workspace_file_limit", 32768))
+        writer = self.call(request("POST", "/api/files/upload", {
+            "path": "/workspace/big.txt", "content": content,
+        }, token=token))
+        self.assertEqual(200, writer.status)
+        self.assertEqual(len(content), writer.json["chars"])
 
     def test_rewind_endpoint_by_count_and_index(self):
         token = self.token()
@@ -1355,6 +1558,23 @@ class WebAppTests(unittest.TestCase):
             }, token=token))
         self.assertEqual(400, raised.exception.status)
         self.assertEqual(12, self.app.config.get("max_turns"))
+
+    def test_config_updates_max_tool_calls_bounds(self):
+        token = self.token()
+        writer = self.call(request("POST", "/api/config", {
+            "max_tool_calls": 32,
+        }, token=token))
+        self.assertEqual(200, writer.status)
+        self.assertEqual(32, self.app.config.get("max_tool_calls"))
+        config = self.call(request("GET", "/api/config", token=token))
+        self.assertEqual(32, config.json["max_tool_calls"])
+        for value in (0, 65):
+            with self.assertRaises(WebError) as raised:
+                self.call(request("POST", "/api/config", {
+                    "max_tool_calls": value,
+                }, token=token))
+            self.assertEqual(400, raised.exception.status)
+        self.assertEqual(32, self.app.config.get("max_tool_calls"))
 
     def test_setup_reports_last_reset_note(self):
         self.app.reset_info = {"code": 3, "name": "WDT_RESET"}

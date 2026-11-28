@@ -2115,7 +2115,7 @@ class Agent:
                 if tool_rounds + len(native_calls) > limit:
                     raise AgentError(
                         "Tool call limit reached (%s); simplify the task or "
-                        "increase max_tool_calls" % limit
+                        "raise max_tool_calls in Settings > Harness behavior" % limit
                     )
                 calls = []
                 results = []
@@ -2152,7 +2152,7 @@ class Agent:
                 if tool_rounds >= self.config.get("max_tool_calls", 16):
                     raise AgentError(
                         "Tool call limit reached (%s); simplify the task or "
-                        "increase max_tool_calls"
+                        "raise max_tool_calls in Settings > Harness behavior"
                         % self.config.get("max_tool_calls", 16)
                     )
                 tool_rounds += 1

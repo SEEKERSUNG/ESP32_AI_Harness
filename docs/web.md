@@ -1,6 +1,6 @@
 # Web 控制台与 AP 配网
 
-设备内置一个可选的 HTTP 控制台：浏览器访问 ESP32 的局域网 IP 和端口（默认 `80`），登录后可以对话、执行命令页 `/` 命令、查看历史和修改 Wi-Fi、模型、CA、管理密码等配置。串口控制台的完整能力保持不变。
+设备内置一个可选的 HTTP 控制台：浏览器访问 ESP32 的局域网 IP 和端口（默认 `80`），登录后可以通过可收起的侧边栏进入状态、对话、任务、Skill、文件和设置。对话输入框同时接受普通消息和 `/` 命令；Wi-Fi、模型、MCP、搜索、Harness 行为、安全和恢复出厂设置都在设置分区中。串口控制台的完整能力保持不变。
 
 网页在独立后台线程运行；前台生成代码和工作区脚本回到串口主线程，后台任务在各自 worker 线程并发执行。网页和串口共享同一份 Agent、历史、配置和待处理项，同一时间只允许一个模型回合或变更型操作。
 
@@ -43,26 +43,29 @@ AP 是 WPA2。首次设置只接受来自 AP 网段的客户端（可用 `web_se
 
 网页 `POST /api/command` 接受状态/历史、搜索/HTTP、Memory/Skill 写入、Workspace 写入、MCP、后台任务控制、只读 `/web`、`/run`、`/run bg`、`/workspace run` 和 `/continue`。需要确认的命令会在浏览器弹出确认框，并以 `confirm:true` 重试；`/auto on`、`/mcp auto <server> on` 也走同一确认流程。
 
-`/run`、`/run bg`、`/workspace run` 和 `/continue` 可从命令页执行，生成/工作区代码通过主线程 handoff 运行，并在浏览器确认后继续。需要第二次输入或重启设备的命令仍使用专用网页入口：`/setup`、`/wifi`、`/model`、`/ca`、`/web reset-password` 使用设置页；`/factory-reset` 使用恢复出厂设置表单；`/repl` 仅串口可用。`/memory replace <match> => <replacement>` 可在命令页直接执行。`/peripherals` 已移除，生成代码直接使用 MicroPython 原生外设库。
+`/run`、`/run bg`、`/workspace run` 和 `/continue` 可直接在对话输入框以 `/` 开头执行，生成/工作区代码通过主线程 handoff 运行，并在浏览器确认后继续。需要第二次输入或重启设备的命令仍使用专用网页入口：`/setup`、`/wifi`、`/model`、`/ca`、`/web reset-password` 使用设置侧边栏；`/factory-reset` 使用恢复出厂设置表单；`/repl` 仅串口可用。`/memory replace <match> => <replacement>` 可在对话框直接执行。`/peripherals` 已移除，生成代码直接使用 MicroPython 原生外设库。
 
 `/code` 仍属于独占操作：它在串口可能进入提案保存/丢弃流程。网页回合期间，串口不能把 `/code` 当作无锁只读命令使用。
 
 ## 网页能力
 
 - 视觉：响应式布局，跟随系统浅色/深色主题；使用本地 CSS 变量、无外部字体/CDN/图片，符合严格 CSP；输入框 16px、触控目标不小于 44px。
-- 对话：同一用户请求的 thinking、工具调用/结果、执行结果和最终正文都放在一个 turn 卡片内，按发生顺序排列；`show_thinking=true` 时每个模型请求的 reasoning 是卡片内的可折叠步骤，最后才是正文。reasoning 随 assistant 消息持久化（每条最多 4096 字符），刷新页面后仍显示；实时流式和刷新后的历史使用同一套 turn 结构。后台任务结果和定时任务续答属于新的 Agent 消息，会在新的 turn 中显示（后台结果折叠为“后台任务结果”，定时任务显示为一条用户请求），不会与上一条回复合并。工具/执行记录默认折叠，运行、丢弃和保存按钮保持在折叠区外；流式更新会保留已展开区块的状态。
+- 侧边栏：桌面端固定左侧，可用顶部按钮或侧栏按钮收起，收起状态记在浏览器 `localStorage`；窄屏（≤900px）默认收起为抽屉，用汉堡按钮打开，选择栏目后自动关闭，背景遮罩可点击关闭。侧边栏包含状态、对话、任务（后台任务/自动化任务）、Skill、文件和设置（网络/模型/MCP/网页搜索/Harness 行为/安全/恢复出厂设置）。
+- 对话：不再把所有内容包进一个大的 turn 卡片。同一回合按事件类型拆成独立、紧凑的气泡：每个模型请求的 thinking 一个可折叠气泡，每次工具调用和工具结果各自一个气泡，代码围栏一个代码气泡，正文按文本段一个气泡；执行结果、问题卡、Skill 提案和代码确认卡也各自是独立气泡。reasoning 随 assistant 消息持久化（每条最多 4096 字符），刷新页面后仍显示；实时流式和刷新后的历史使用同一套气泡结构。后台任务结果和定时任务续答属于新的 Agent 消息，会在新的 turn 中显示（后台结果折叠为“后台任务结果”，定时任务显示为一条用户请求），不会与上一条回复合并。工具/执行记录默认折叠，运行、丢弃和保存按钮保持在折叠区外；流式更新会保留已展开区块的状态。
 - 停止：流式期间显示“停止”按钮。点击后浏览器停止接收响应，设备端在下一批事件发送失败时中止当前模型请求；页面保持等待并轮询真实 busy 状态，回合结束后才恢复输入。若设备正在执行本页没有持有的回合（AUTO 自动继续、定时任务或串口回合），`/api/status.turn_busy` 为真时同样显示停止按钮，点击会调用 `POST /api/stop`，由主线程在下一个网络检查点或执行器检查点协作取消。浏览器自己 `/api/run` 流已经开始执行的代码不会被该按钮中断；设备自有回合在主线程上协作运行的生成代码会在 `__harness_check()`、插桩后的 `range`、所有 `while` 条件或 `time.sleep()` 处返回 `cancelled`。阻塞在 C/SPI 调用中的代码仍可能继续产生副作用，直到执行结束或看门狗复位。`timeout=` 应写在开围栏同一行；闭合围栏后的独立 `timeout=` 行和代码块首个未再使用的独立 `timeout=N` 行也会被兼容识别，其他说明文字不会改变超时。部分未提交的模型回答不会写入历史。
 - 模型提问：模型调用 `__ask` 时显示问题卡（标题、问题、最多 8 个选项按钮和自定义输入）。点击选项或直接输入文本会作为下一条消息发送；问题事件不阻塞设备线程，刷新后可从 `/api/status` 的 `question` 字段恢复。已回答的问题不会再被延迟到达的旧状态插入到下一回合；只有新的 `question` 事件会重新显示卡片。系统提示词会区分 `auto_run` 模式，避免模型在自动执行时向用户索要执行输出。
 - 对话框控件：Thinking 下拉框只有关闭/Low/High/Max 四档（默认 High），选择后立即写入 `config.json`，重启/复位后保持；AUTO 控制 `auto_run`，开启需要确认，关闭不需要。请求期间控件禁用，保存失败恢复设备实际状态。
-- 布局：对话/命令/任务导航栏固定在页面底部，Thinking/AUTO 位于对话框旁，窄屏自动换行；输入框位于导航栏上方，长对话不会把导航栏挤出视野。切换到命令页再返回对话页时，页面会自动滚动到最新消息；新内容到达时仅在用户接近底部时跟随，避免打断向上翻阅历史。
-- 任务页：后台任务不再作为聊天气泡插入对话，而是统一显示在“任务 → 后台任务”中，位置固定，不随新回复漂移；每个任务仍提供停止、继续、丢弃和输出抽屉。下方“定时任务”列出一次性/重复任务，支持新建、编辑、启停、立即运行和删除。提示词任务到点后在主线程执行一个 Agent 回合；代码任务到点后创建后台任务。页面通过 `/api/status.schedules` 刷新任务摘要，`schedule_seq` 变化后自动刷新历史。
-- 代码确认：默认显示“运行/丢弃”；`auto_run=true` 时安全代码自动执行并自动反馈。
-- Skill：显示提案卡，可保存或丢弃；Skill 永不自动保存。
-- 命令页：非交互 `/` 命令和输出；需要确认的命令会弹出确认框，交互式命令会提示使用对应表单或串口。
-- 设置：Wi-Fi、API 协议（OpenAI 兼容/Anthropic）、Base URL、Model、API Key、TLS 验证、CA 路径、CA PEM、MCP 服务器 JSON、网页搜索（启用、provider auto/bing、实际生效提供方）、公共 HTTP 抓取（`__http` 启用、明文 HTTP 开关）、NTP 服务器、显示时区偏移、自动校时间隔、管理密码、AP 密码、思考文本显示、自动反馈、对话持久化、清空/压缩上下文、测试 Wi-Fi/API，以及恢复出厂设置。Thinking 强度和 AUTO 不再重复放在设置页，而是在对话框旁直接操作。
+- 布局：侧边栏承载栏目导航，顶部栏显示当前栏目、连接状态、AUTO 标记和刷新按钮；对话框固定在内容区底部，Thinking/AUTO 位于输入框左侧，桌面和手机尽量保持单行紧凑布局，手机隐藏 Thinking 文字标签。页面按输入框实际高度更新聊天底部留白。切换栏目再回到对话时页面自动滚动到最新消息；新内容到达时仅在用户接近底部时跟随，避免打断向上翻阅历史。
+- 任务：后台任务不再作为聊天气泡插入对话，而是显示在“任务 → 后台任务”中，位置固定，不随新回复漂移；每个任务仍提供停止、继续、丢弃和输出抽屉。“任务 → 自动化任务”列出一次性/重复任务，支持新建、编辑、启停、立即运行和删除。提示词任务到点后在主线程执行一个 Agent 回合；代码任务到点后创建后台任务。页面通过 `/api/status.schedules` 刷新任务摘要，`schedule_seq` 变化后自动刷新历史。
+- 代码确认：默认显示“前台运行/后台运行/丢弃”；`auto_run=true` 时安全代码自动执行并自动反馈。
+- Skill：侧边栏“Skill”页列出已保存的 `SKILL.md`，可展开查看完整内容；对话中的 Skill 提案仍显示可保存/丢弃的独立气泡，Skill 永不自动保存。
+- 命令：非交互 `/` 命令直接在对话输入框执行，命令本身显示为命令气泡，输出显示为独立系统气泡；需要确认的命令会弹出确认框，交互式命令会提示使用对应表单或串口。
+- 设置：侧边栏按网络、模型、MCP、网页搜索、Harness 行为、安全、恢复出厂设置分区显示。包含 Wi-Fi、API 协议（OpenAI 兼容/Anthropic）、Base URL、Model、API Key、TLS 验证、CA 路径、CA PEM、MCP 服务器 JSON、网页搜索（启用、provider auto/bing、实际生效提供方）、公共 HTTP 抓取（`__http` 启用、明文 HTTP 开关）、NTP 服务器、显示时区偏移、自动校时间隔、管理密码、AP 密码、思考文本显示、自动反馈、后台执行、单回合工具调用上限（`max_tool_calls`，1–64）、对话持久化和恢复出厂设置。Thinking 强度和 AUTO 在对话框旁直接操作。
+- 状态页：显示网络模式/IP/Wi-Fi/可用堆/模型/会话/版本、上下文消息数/字符数/估算 tokens/占用百分比/压缩摘要字符数、当前设备回合和后台任务数；提供“清空对话”“压缩上下文”“刷新历史”按钮。清空会删除全部历史；压缩会调用模型生成摘要，可能耗时并产生一次模型请求。
+- 文件：侧边栏“文件”页浏览整个 MicroPython VFS，支持进入目录、下载、查看/编辑、上传 UTF-8 文本文件、新建文件夹/文本文件、重命名和删除。`/workspace` 下的文件可写；固件、启动文件、`/harness`、`/skills`、`/state` 和其他系统文件只读，界面标记“系统”；`/secrets.json` 和 `/mcp.json` 标记“敏感”，网页不读取也不下载。`/workspace` 和 `/workspace/tmp` 目录本身不能删除或重命名，但可以管理其中的内容。文件列表最多显示 200 项，单文件编辑/上传受 `workspace_file_limit` 和总工作区限制约束；上传仅支持 UTF-8 文本，不支持二进制。下载是认证后的原始附件响应，单文件最大 256 KB。
 - 恢复出厂设置：需勾选确认并再次输入当前管理密码；删除 `config.json`、`secrets.json`、`mcp.json`、`MEMORY.md`、待恢复代码、Skill、旧版 Tool 目录、工作区、`/state` 持久对话和 RAM 中的对话状态后重启。固件、启动文件和公共 CA 保留；Wi-Fi 配置清除后会回到设备 AP 首次设置流程。
 - CA 配置：页面明确提示“不想自定义时保持原样即可”。已检测到 CA 文件时，路径和 PEM 上传默认收在“高级：自定义 CA”折叠区；部署器会自动把全量 bundle 安装到 `/ca.pem`，通常无需替换。检测不到 CA 文件时自动展开并提示安装。折叠只简化界面，不会关闭 `tls_verify`。
-- 状态：STA/AP 模式、IP、AP 宽限倒计时、Wi-Fi 错误、堆、历史/上下文、待处理项、待回答问题、会话数。状态接口使用一次性 pending 快照，串口同时运行或丢弃提案不会把正常轮询变成 500。
+- 状态数据：STA/AP 模式、IP、AP 宽限倒计时、Wi-Fi 错误、堆、历史/上下文、待处理项、待回答问题、会话数。状态接口使用一次性 pending 快照，串口同时运行或丢弃提案不会把正常轮询变成 500。
 - 历史：`/api/history` 优先保留最新消息，再按时间正序返回；字符预算不足时省略较早消息，而不是先丢掉当前对话尾部。
 - 页面每 5 秒轮询状态（空闲且页面可见时）；流式请求期间暂停轮询。
 - “测试 Wi-Fi”只检查 Wi-Fi、NTP/RTC 等网络条件，不要求已经填写模型、API Key 或 CA；“测试 API”才执行完整模型配置校验和真实请求。
@@ -139,6 +142,15 @@ POST /api/background/stop     {id?,discard?} 协作式停止；discard:true 同�
 POST /api/background/discard  {id?} 或 {all:true} 丢弃已完成/失败的后台结果
 GET  /api/schedules           列出完整定时任务；?id=N 返回单个任务
 POST /api/schedules           {action:"create|update|delete|enable|disable|run", id?, ...字段}
+GET  /api/skills             列出 Skill；?name=NAME 返回单个 SKILL.md
+GET  /api/files?path=/PATH   列出 VFS 目录，返回 kind/size/writable/editable/protected/sensitive
+GET  /api/files/read?path=   读取 UTF-8 文本（最多 32768 字符）；敏感文件 403
+GET  /api/files/download?path= 下载原始附件（最大 256 KB）；敏感文件 403
+POST /api/files/write         {path,content}；仅 /workspace
+POST /api/files/upload        {path,content,overwrite?}；仅 /workspace，UTF-8 文本
+POST /api/files/mkdir         {path}；仅 /workspace
+POST /api/files/rename        {path,name}；仅 /workspace
+POST /api/files/delete        {path}；仅 /workspace，目录必须为空
 POST /api/discard
 POST /api/save-skill
 POST /api/command
@@ -197,7 +209,7 @@ question, response, code, background, execution, skill, feedback, done, error
 | `web_max_sessions` | `8` | 最大 RAM 会话数，最旧淘汰 |
 | `web_login_fail_limit` | `5` | 每 IP 连续失败次数 |
 | `web_login_lock_ms` | `30000` | 初始锁定，指数递增到 5 分钟 |
-| `web_body_limit` | `32768` | 普通 JSON 正文上限（CA 路由 64 KB） |
+| `web_body_limit` | `32768` | 普通 JSON 正文上限（CA 路由 64 KB）；文件上传/写入按 `workspace_file_limit` 放宽，最多 262144 |
 | `web_request_timeout_s` | `30` | 请求头和正文完整读取的总超时（秒，设备端限制为 1–120） |
 | `web_command_limit` | `4096` | 网页命令最大长度 |
 | `web_output_limit` | `16384` | 网页命令输出预算；模型 reasoning/正文不设上限 |
@@ -205,7 +217,7 @@ question, response, code, background, execution, skill, feedback, done, error
 | `web_history_limit` | `200` | `/api/history` 最大消息数 |
 | `web_history_chars` | `131072` | 历史响应总字符预算 |
 
-网页对话视图加载的是 `/api/history` 的**有界最近窗口**：最多 `web_history_limit` 条、`web_history_chars` 字符，单条正文最多 8192 字符、单条 reasoning 最多 4096 字符。observation 记录会按“工具结果/执行结果/后台任务结果/Harness 记录”逐条渲染为可折叠步骤，并与同一用户请求的 assistant reasoning、Native tool call 一起按发生顺序重建到同一个 turn 卡片中；`Local ESP32 background execution result` 例外，它会开启新的 turn，与后续续答单独成组。串口 `/history` 打印当前 RAM 中的完整 `agent.history`，因此条数可能明显多于网页；网页在有截断时会显示 `最近 X/Y 条` 的提示。两者都来自同一份 `agent.history`，不是两份独立上下文；差异只来自网页响应预算。需要查看更多时可通过 `POST /api/config` 提高 `web_history_limit`（1–200）或 `web_history_chars`（1024–262144），或在串口使用 `/history`、`/context`。自动压缩或 `_trim_history` 之后，网页需要刷新历史才能看到压缩后的结果。
+网页对话视图加载的是 `/api/history` 的**有界最近窗口**：最多 `web_history_limit` 条、`web_history_chars` 字符，单条普通正文最多 8192 字符、单条工具/执行 observation 最多 2048 字符（与实时工具结果一致，避免长输出挤掉 thinking）、单条 reasoning 最多 4096 字符。observation 记录会按“工具结果/执行结果/后台任务结果/Harness 记录”逐条渲染为独立气泡；`Local tool result for ...` 渲染为工具结果气泡，`Local ESP32 background execution result` 会开启新的 turn，与后续续答单独成组。assistant reasoning、Native tool call 和正文也按事件拆成独立气泡，按发生顺序重建。串口 `/history` 打印当前 RAM 中的完整 `agent.history`，因此条数可能明显多于网页；网页在有截断时会显示 `最近 X/Y 条` 的提示。两者都来自同一份 `agent.history`，不是两份独立上下文；差异只来自网页响应预算。需要查看更多时可通过 `POST /api/config` 提高 `web_history_limit`（1–200）或 `web_history_chars`（1024–262144），或在串口使用 `/history`、`/context`。自动压缩或 `_trim_history` 之后，网页需要刷新历史才能看到压缩后的结果。
 
 | `ap_ssid_prefix` | `ESP32-Harness` | AP SSID 前缀 |
 | `ap_channel` | `6` | AP 信道 |

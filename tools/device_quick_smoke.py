@@ -145,7 +145,9 @@ def run():
     assert "search_provider_effective" in APP_JS
     assert "questions" in APP_JS or "question" in APP_JS
     assert "background" in APP_JS and "rewind" in APP_JS
-    assert "tasksPane" in INDEX_HTML and "scheduleList" in INDEX_HTML
+    assert "sidebar" in INDEX_HTML and "scheduleList" in INDEX_HTML
+    assert "screenFiles" in INDEX_HTML and "screenSkills" in INDEX_HTML
+    assert "/api/files" in APP_JS and "/api/skills" in APP_JS
     assert "/api/schedules" in APP_JS and "syncSchedules" in APP_JS
     assert "harness" in INDEX_HTML.lower()
 

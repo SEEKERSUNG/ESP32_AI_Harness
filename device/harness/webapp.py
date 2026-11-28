@@ -11,7 +11,7 @@ from .agent import (
     auto_source_is_safe,
     message_kind,
 )
-from .config import write_text
+from .config import read_text, write_text
 from .llm import (
     LLMStreamCancelled,
     default_base_url,
@@ -26,6 +26,16 @@ from .webauth import (
     parse_cookie,
 )
 from .webui import APP_CSS, APP_JS, INDEX_HTML
+
+
+# The web file manager can browse the whole MicroPython VFS, but only
+# /workspace is user data. Everything else is system firmware, configuration
+# or harness state and must stay read-only from this interface.
+FILE_SENSITIVE_PATHS = ("/secrets.json", "/mcp.json")
+FILE_PROTECTED_PATHS = ("/workspace", "/workspace/tmp")
+FILE_LIST_LIMIT = 200
+FILE_READ_LIMIT = 32768
+FILE_MAX_BYTES = 262144
 
 
 def _error(message, status=400, code="invalid"):
@@ -367,7 +377,17 @@ class WebApp:
         self.auth = auth
 
     def body_limit(self):
-        return 65536
+        # A text upload is JSON-escaped, so allow roughly twice the workspace
+        # per-file character limit. The device has enough heap for this and the
+        # actual file limit is enforced again by Workspace.write().
+        try:
+            file_limit = int(self.app.config.get(
+                "workspace_file_limit", 32768))
+        except (TypeError, ValueError):
+            file_limit = 32768
+        # JSON.stringify leaves non-ASCII characters as UTF-8 (up to four
+        # bytes each), so budget four bytes per character plus escaping.
+        return max(65536, min(file_limit * 4 + 8192, 262144))
 
     def request_timeout(self):
         try:
@@ -569,6 +589,7 @@ class WebApp:
                 "chars": usage.get("chars", 0),
                 "estimated_tokens": usage.get("estimated_tokens", 0),
                 "percent": usage.get("percent", 0),
+                "summary_chars": len(getattr(agent, "summary", "") or ""),
             },
             "pending": pending,
             "question": getattr(agent, "pending_question", None),
@@ -689,6 +710,7 @@ class WebApp:
             "history": {"messages": usage.get("messages", 0), "chars": usage.get("chars", 0)},
             "max_tokens": self.app.config.get("max_tokens", 32768),
             "max_turns": self.app.config.get("max_turns", 32),
+            "max_tool_calls": self.app.config.get("max_tool_calls", 16),
             "input_limit": self.app.config.get("input_limit", 2000),
             "stream_header_timeout": self.app.config.get("stream_header_timeout", 300),
             "stream_idle_timeout": self.app.config.get("stream_idle_timeout", 300),
@@ -721,7 +743,13 @@ class WebApp:
         # restore chronological order for the browser.
         for offset in range(len(selected) - 1, -1, -1):
             message = selected[offset]
-            content, cut = _truncate(message.get("content", ""), 8192)
+            kind = message_kind(message)
+            # Tool/execution observations are also capped in the live stream
+            # at 2048 characters. Keeping the same cap here leaves room for
+            # assistant reasoning; otherwise a tool-heavy turn can spend the
+            # whole history budget on outputs and drop every thinking bubble.
+            content_limit = 2048 if kind == "observation" else 8192
+            content, cut = _truncate(message.get("content", ""), content_limit)
             if total + len(content) > total_limit:
                 truncated = True
                 if newest_first:
@@ -747,7 +775,7 @@ class WebApp:
                 "reasoning": reasoning,
                 "truncated": cut,
                 "index": window_start + offset,
-                "kind": message_kind(message),
+                "kind": kind,
             })
             if total >= total_limit:
                 truncated = truncated or len(newest_first) < len(selected)
@@ -855,6 +883,34 @@ class WebApp:
                     self._schedules_view(req, writer)
                 else:
                     self._update_schedules(req, writer)
+                return
+            if path == "/api/skills" and req.method == "GET":
+                self._skills_view(req, writer)
+                return
+            if path == "/api/files" and req.method == "GET":
+                writer.send_json(200, self._files_view(
+                    req.query.get("path", "/")))
+                return
+            if path == "/api/files/read" and req.method == "GET":
+                self._file_read(req, writer)
+                return
+            if path == "/api/files/download" and req.method == "GET":
+                self._file_download(req, writer)
+                return
+            if path == "/api/files/write" and req.method == "POST":
+                self._file_write(req, writer)
+                return
+            if path == "/api/files/upload" and req.method == "POST":
+                self._file_upload(req, writer)
+                return
+            if path == "/api/files/mkdir" and req.method == "POST":
+                self._file_mkdir(req, writer)
+                return
+            if path == "/api/files/rename" and req.method == "POST":
+                self._file_rename(req, writer)
+                return
+            if path == "/api/files/delete" and req.method == "POST":
+                self._file_delete(req, writer)
                 return
             if path == "/api/discard" and req.method == "POST":
                 self._discard(writer)
@@ -1049,6 +1105,7 @@ class WebApp:
                     self.app.config.set(key, value, save=False)
             timeout_fields = (
                 ("max_turns", 1, 50),
+                ("max_tool_calls", 1, 64),
                 ("stream_header_timeout", 1, 3600),
                 ("stream_idle_timeout", 1, 3600),
                 ("stream_event_idle_timeout", 0, 3600),
@@ -1739,6 +1796,381 @@ class WebApp:
             response["task"] = self.app.schedule_view(
                 task.get("id"), full=True)
         writer.send_json(200, response)
+
+    def _skills_view(self, req, writer):
+        store = getattr(self.app, "skills", None)
+        if store is None:
+            raise _error("Skills are unavailable", 503, "internal")
+        name = req.query.get("name")
+        if name:
+            try:
+                bundle = store.read_bundle(
+                    name, limit=int(self.app.config.get(
+                        "skill_char_limit", 16384)))
+            except Exception as exc:
+                raise _error(str(exc), 404, "skills")
+            bundle["ok"] = True
+            writer.send_json(200, bundle)
+            return
+        try:
+            limit = int(self.app.config.get("skill_list_limit", 50))
+        except (TypeError, ValueError):
+            limit = 50
+        writer.send_json(200, {
+            "ok": True,
+            "skills": store.list(limit=limit),
+            "limit": limit,
+        })
+
+    @staticmethod
+    def _file_path(raw, allow_root=False):
+        if raw is None:
+            raw = ""
+        if not isinstance(raw, str):
+            raise _error("path must be text", 400, "invalid")
+        raw = raw.strip()
+        if not raw:
+            raw = "/"
+        if not raw.startswith("/"):
+            raw = "/" + raw
+        parts = []
+        for part in raw.split("/"):
+            if part in ("", "."):
+                continue
+            if part == ".." or "\\" in part:
+                raise _error(
+                    "File path may not traverse outside the device VFS",
+                    400, "invalid")
+            if len(part) > 64:
+                raise _error("File path component is too long",
+                             400, "invalid")
+            for char in part:
+                code = ord(char)
+                if code < 32 or code == 127:
+                    raise _error(
+                        "File path contains a control character",
+                        400, "invalid")
+            parts.append(part)
+        path = "/" + "/".join(parts)
+        if path == "/" and not allow_root:
+            raise _error("The VFS root is a directory", 400, "invalid")
+        return path
+
+    @staticmethod
+    def _file_name(raw):
+        if not isinstance(raw, str):
+            raise _error("name must be text", 400, "invalid")
+        name = raw.strip()
+        if not name or name in (".", "..") or "/" in name or "\\" in name:
+            raise _error("Invalid file name", 400, "invalid")
+        if len(name) > 64:
+            raise _error("File name is too long", 400, "invalid")
+        for char in name:
+            if not ("a" <= char <= "z" or "A" <= char <= "Z"
+                    or "0" <= char <= "9" or char in "._-"):
+                raise _error(
+                    "File names may only contain letters, digits, '.', "
+                    "'_' and '-'", 400, "invalid")
+        return name
+
+    def _file_os_path(self, path):
+        """Map a device VFS path to the host path used by unit tests.
+
+        On the device Config.root is "/", so the mapping is a no-op. Host
+        tests use a temporary root; without this mapping the file manager
+        would read the developer's real filesystem.
+        """
+        root = getattr(self.app.config, "root", "/") or "/"
+        if root in ("", "/"):
+            return path
+        return root.rstrip("/") + path
+
+    def _file_exists(self, path):
+        try:
+            os.stat(self._file_os_path(path))
+            return True
+        except OSError:
+            return False
+
+    def _file_is_dir(self, path):
+        try:
+            os.listdir(self._file_os_path(path))
+            return True
+        except OSError:
+            return False
+
+    @staticmethod
+    def _file_secret(path):
+        # FAT/FATFS lookups are case-insensitive, so compare the normalized
+        # path in lower case as well.
+        lowered = path.lower()
+        return lowered in FILE_SENSITIVE_PATHS
+
+    @staticmethod
+    def _file_mutable(path):
+        if path in FILE_PROTECTED_PATHS or path == "/workspace":
+            return False
+        return path.startswith("/workspace/")
+
+    def _file_limit(self):
+        try:
+            value = int(self.app.config.get("workspace_file_limit", 32768))
+        except (TypeError, ValueError):
+            value = 32768
+        return max(1, value)
+
+    def _file_entry(self, path, name):
+        try:
+            size = os.stat(self._file_os_path(path))[6]
+        except OSError:
+            return None
+        is_dir = self._file_is_dir(path)
+        if is_dir:
+            size = 0
+        mutable = self._file_mutable(path)
+        limit = self._file_limit()
+        return {
+            "name": name,
+            "path": path,
+            "kind": "dir" if is_dir else "file",
+            "size": size,
+            "writable": mutable,
+            "editable": bool(mutable and not is_dir and size <= limit),
+            "sensitive": self._file_secret(path),
+            # /workspace and /workspace/tmp are containers rather than system
+            # files; they cannot be renamed or deleted, but should not be
+            # labelled as firmware/system content.
+            "protected": bool(
+                not mutable and path not in FILE_PROTECTED_PATHS),
+        }
+
+    def _file_state(self, path):
+        try:
+            size = os.stat(self._file_os_path(path))[6]
+        except OSError:
+            raise _error("File not found: %s" % path, 404, "files")
+        is_dir = self._file_is_dir(path)
+        return {
+            "path": path,
+            "kind": "dir" if is_dir else "file",
+            "size": 0 if is_dir else size,
+            "writable": self._file_mutable(path),
+            "sensitive": self._file_secret(path),
+        }
+
+    def _files_view(self, raw_path):
+        path = self._file_path(raw_path, allow_root=True)
+        if not self._file_is_dir(path):
+            raise _error("Not a directory: %s" % path, 400, "files")
+        try:
+            names = os.listdir(self._file_os_path(path))
+        except OSError:
+            raise _error("Cannot list %s" % path, 404, "files")
+        entries = []
+        for name in names[:FILE_LIST_LIMIT]:
+            child = ("/" + name) if path == "/" else (path + "/" + name)
+            entry = self._file_entry(child, name)
+            if entry is not None:
+                entries.append(entry)
+        entries.sort(key=lambda item: (
+            0 if item["kind"] == "dir" else 1, item["name"]))
+        parent = ""
+        if path != "/":
+            parent = path.rsplit("/", 1)[0] or "/"
+        return {
+            "ok": True,
+            "path": path,
+            "parent": parent,
+            "entries": entries,
+            "writable": bool(
+                path == "/workspace" or path.startswith("/workspace/")),
+            "file_limit": self._file_limit(),
+            "truncated": len(names) > FILE_LIST_LIMIT,
+        }
+
+    def _read_file_text(self, path):
+        try:
+            data = read_text(self._file_os_path(path))
+        except OSError:
+            raise _error("File not found: %s" % path, 404, "files")
+        except (UnicodeError, ValueError):
+            raise _error("File is not UTF-8 text: %s" % path,
+                         400, "files")
+        if "\x00" in data:
+            raise _error("Binary files cannot be edited: %s" % path,
+                         400, "files")
+        return data
+
+    def _file_read(self, req, writer):
+        path = self._file_path(req.query.get("path", ""))
+        if self._file_secret(path):
+            raise _error("Sensitive files cannot be read here",
+                         403, "files")
+        state = self._file_state(path)
+        if state["kind"] == "dir":
+            raise _error("Cannot read a directory", 400, "files")
+        text = self._read_file_text(path)
+        truncated = len(text) > FILE_READ_LIMIT
+        writer.send_json(200, {
+            "ok": True,
+            "path": path,
+            "text": text[:FILE_READ_LIMIT],
+            "chars": len(text),
+            "truncated": truncated,
+            "writable": state["writable"],
+            "editable": bool(
+                state["writable"] and len(text) <= self._file_limit()),
+        })
+
+    def _file_download(self, req, writer):
+        path = self._file_path(req.query.get("path", ""))
+        if self._file_secret(path):
+            raise _error("Sensitive files cannot be downloaded",
+                         403, "files")
+        state = self._file_state(path)
+        if state["kind"] == "dir":
+            raise _error("Cannot download a directory", 400, "files")
+        if state["size"] > FILE_MAX_BYTES:
+            raise _error("File is too large to download", 413, "files")
+        try:
+            with open(self._file_os_path(path), "rb") as handle:
+                data = handle.read()
+        except OSError:
+            raise _error("File not found: %s" % path, 404, "files")
+        name = path.rsplit("/", 1)[-1]
+        safe = []
+        for char in name:
+            code = ord(char)
+            safe.append(char if 32 <= code < 127 and char != '"' else "_")
+        name = "".join(safe)
+        writer.send_response(
+            200, data, "application/octet-stream",
+            extra=[("Content-Disposition",
+                    'attachment; filename="%s"' % name)])
+
+    def _file_write(self, req, writer):
+        body = self._json(req, limit=self.body_limit())
+        path = self._file_path(body.get("path", ""))
+        if self._file_secret(path):
+            raise _error("Sensitive files cannot be written here",
+                         403, "files")
+        if not self._file_mutable(path):
+            raise _error("Only files under /workspace can be modified",
+                         403, "files")
+        content = body.get("content")
+        if not isinstance(content, str):
+            raise _error("content must be text", 400, "invalid")
+        if "\x00" in content:
+            raise _error("Binary content is not supported", 400, "invalid")
+        try:
+            result = self.app.workspace.write(path, content)
+        except Exception as exc:
+            raise _error(str(exc), 400, "files")
+        writer.send_json(200, {
+            "ok": True, "path": result["path"],
+            "chars": result["chars"],
+        })
+
+    def _file_upload(self, req, writer):
+        body = self._json(req, limit=self.body_limit())
+        path = self._file_path(body.get("path", ""))
+        if self._file_secret(path):
+            raise _error("Sensitive files cannot be written here",
+                         403, "files")
+        if not self._file_mutable(path):
+            raise _error("Only files under /workspace can be uploaded",
+                         403, "files")
+        content = body.get("content")
+        if not isinstance(content, str):
+            raise _error("content must be text", 400, "invalid")
+        if "\x00" in content:
+            raise _error("Only UTF-8 text files can be uploaded",
+                         400, "files")
+        overwrite = _boolean(body, "overwrite", False)
+        try:
+            result = self.app.workspace.write(
+                path, content, overwrite=overwrite)
+        except Exception as exc:
+            raise _error(str(exc), 400, "files")
+        writer.send_json(200, {
+            "ok": True, "path": result["path"],
+            "chars": result["chars"],
+        })
+
+    def _file_mkdir(self, req, writer):
+        body = self._json(req)
+        path = self._file_path(body.get("path", ""))
+        if not path.startswith("/workspace/"):
+            raise _error("Only /workspace directories can be created",
+                         403, "files")
+        if self._file_exists(path):
+            raise _error("Path already exists: %s" % path, 409, "files")
+        try:
+            result = self.app.workspace.mkdir(path)
+        except Exception as exc:
+            raise _error(str(exc), 400, "files")
+        writer.send_json(200, {"ok": True, "path": result["path"]})
+
+    def _file_rename(self, req, writer):
+        body = self._json(req)
+        path = self._file_path(body.get("path", ""))
+        if not self._file_mutable(path):
+            raise _error("Only files under /workspace can be renamed",
+                         403, "files")
+        name = self._file_name(body.get("name", ""))
+        parent = path.rsplit("/", 1)[0] or "/"
+        new_path = (parent.rstrip("/") + "/" + name) if parent != "/" \
+            else "/" + name
+        if new_path == path:
+            writer.send_json(200, {"ok": True, "path": path})
+            return
+        if not new_path.startswith("/workspace/"):
+            raise _error("Only files under /workspace can be renamed",
+                         403, "files")
+        try:
+            os.stat(self._file_os_path(path))
+        except OSError:
+            raise _error("File not found: %s" % path, 404, "files")
+        try:
+            os.stat(self._file_os_path(new_path))
+            exists = True
+        except OSError:
+            exists = False
+        if exists:
+            raise _error("Path already exists: %s" % new_path,
+                         409, "files")
+        try:
+            os.rename(self._file_os_path(path),
+                      self._file_os_path(new_path))
+        except OSError as exc:
+            raise _error("Rename failed: %s" % exc, 400, "files")
+        writer.send_json(200, {"ok": True, "path": new_path})
+
+    def _file_delete(self, req, writer):
+        body = self._json(req)
+        path = self._file_path(body.get("path", ""))
+        if not self._file_mutable(path):
+            raise _error("Only files under /workspace can be deleted",
+                         403, "files")
+        if self._file_is_dir(path):
+            actual = self._file_os_path(path)
+            try:
+                names = os.listdir(actual)
+            except OSError:
+                raise _error("Directory not found: %s" % path,
+                             404, "files")
+            if names:
+                raise _error("Directory is not empty", 409, "files")
+            try:
+                os.rmdir(actual)
+            except OSError as exc:
+                raise _error("Delete failed: %s" % exc, 400, "files")
+        else:
+            try:
+                os.remove(self._file_os_path(path))
+            except OSError:
+                raise _error("File not found: %s" % path, 404, "files")
+        writer.send_json(200, {"ok": True, "path": path})
 
     def _discard_background(self, req, writer):
         body = self._json(req)

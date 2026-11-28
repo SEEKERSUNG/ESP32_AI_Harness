@@ -4,6 +4,8 @@
 
 ### Added
 
+- 网页侧边栏与分区改版：桌面端可收起的左侧导航（状态/对话/任务/Skill/文件/设置，任务和设置带子项），窄屏为带遮罩的抽屉并记住收起状态；对话输入框直接执行 `/` 命令，不再单独提供命令页；Thinking/AUTO 移到输入框左侧的单行紧凑区域，输入框默认一行，手机隐藏 Thinking 文字标签并按实际输入框高度调整聊天底部留白；状态页集中显示网络、堆、上下文占用、后台任务，并提供清空对话/压缩上下文按钮；设置拆成网络、模型、MCP、网页搜索、Harness 行为、安全和恢复出厂设置分区。新增 `GET /api/skills`（`?name=` 读取单个 `SKILL.md`）、`GET /api/files`、`/api/files/read`、`/api/files/download`、`/api/files/write`、`/api/files/upload`、`/api/files/mkdir`、`/api/files/rename`、`/api/files/delete`。文件页浏览整个 VFS：`/workspace` 可写，系统文件只读且不可重命名/删除，`/secrets.json`、`/mcp.json` 不可读/下载；上传仅支持 UTF-8 文本，单文件受 `workspace_file_limit` 约束，下载最大 256 KB。`/api/status.history.summary_chars` 供状态页显示压缩摘要大小；文件上传/写入的请求体上限按 `workspace_file_limit` 放宽（最多 262144）；
+- 对话气泡按事件拆分：每个模型请求的 thinking、每次工具调用、每次工具结果、代码围栏、正文文本段、执行结果、问题卡、Skill 提案和代码确认卡各成独立紧凑气泡，不再把所有内容包进一个助手卡片；历史中的 `Local tool result for ...` 也还原为工具结果气泡；实时流式和刷新后的历史使用同一套拆分规则；
 - `__workspace` 增量编辑：新增 `append` 和 `replace`（唯一 `match`，`all=true` 全部替换，空 `content` 删除匹配）。系统提示词和工具说明现在建议：需要多轮调试的较长程序先写入 `/workspace/tmp`，之后只发送改动片段并 `run` 存储文件，避免每轮重新输出完整程序；短小的一次性程序仍用普通 python 代码块。`write`/`append`/`replace` 不执行代码，`run` 的确认/AUTO 规则不变；
 - 设备自有回合的网页停止：`/api/status.turn_busy` 为真时，即使本页没有打开的流也显示“停止”按钮；`POST /api/stop` 给串口、AUTO 自动继续和定时任务设置主线程协作取消标志，在 `Application.check_cancel()` 的下一个网络检查点生效，也会让主线程执行器在 `__harness_check()`、插桩后的 `range`、所有 `while` 条件或 `time.sleep()` 检查点返回 `cancelled`。取消后定时任务记为失败，自动继续结束，页面刷新历史并隐藏按钮；浏览器自己的 `/api/chat` 流仍通过关闭请求停止；
 - 后台任务“停止并丢弃”：`__background action=stop_discard`、`/background stopdiscard [ID]`、网页每个任务的“停止并丢弃 #N”和“停止并丢弃全部”，以及 `POST /api/background/stop {"discard":true}`。排队任务立即移除；运行中任务标记 `discard_on_finish`，在协作检查点结束后直接移除，不产生 ready 结果，不会被自动继续/手动继续，也不会在重启后恢复为 error/ready 记录；
@@ -34,6 +36,8 @@
 
 ### Fixed
 
+- 网页刷新后 thinking 气泡可能消失：`/api/history` 原先把工具/执行 observation 按普通消息的 8192 字符计入 `web_history_chars` 预算，工具密集的回合会先用长输出占满窗口，导致较早的 assistant reasoning 被丢弃。现在 observation 与实时工具结果一样每条最多 2048 字符，为 thinking 留出空间，最近回合的思考气泡在刷新后仍会显示；
+- 单回合工具调用上限现在可在网页“设置 → Harness 行为”调整（`max_tool_calls`，1–64，默认 16）；达到上限时的错误会提示该设置，而不是只建议简化任务；
 - 已回答的问题卡会被一个早发出、晚到达的 `/api/status` 响应重新画到下一回合的气泡顶部（回答后模型仍在流式回复时尤其明显），刷新页面后又消失。状态恢复现在会忽略正在流式输出的回合，并记录已回答问题的 header/正文；只有新的 `question` 事件会清除该记录并允许再次显示。回答请求失败时会清除记录，下一次状态轮询仍可恢复待回答问题；
 - 待执行代码卡片的按钮在代码已被 AUTO、串口或另一次点击消费后仍可能保留：一个在点击前发出的 `/api/status` 响应会在新的执行回合里重新画出代码卡，之后点击只会得到 `request failed: No pending code`，页面还会停在看似空闲的状态。现在代码卡记录源码，运行/丢弃后禁用并清理旧按钮；状态恢复不向流式中的回合插入卡片，也不会恢复已消费的源码；遇到 `No pending code` 会移除死按钮、立即刷新状态并在需要时重建历史。`refreshHistory` 改为从新的 `/api/status` 恢复 pending 卡片，避免使用过期快照；
 - 生成代码的 `while <任意条件>:` 此前不会自动插桩，只有 `range()`、字面量 `while True:`/`while 1:` 和 `time.sleep()` 会喂狗；使用 `while time.ticks_diff(...) < ...:` 等轮询循环且不显式调用 `__harness_check()` 时，30 秒看门狗会直接复位设备（`WDT_RESET`）。执行器现在把所有 `while` 条件改写为 `while __harness_check() or (<条件>):`，扫描时跟踪括号、字符串、注释和 `:=`，避免误改切片/字典/lambda 中的冒号；非 `range` 的 `for` 循环和单次迭代内长时间阻塞仍需显式检查；
