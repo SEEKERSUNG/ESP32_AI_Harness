@@ -966,7 +966,14 @@ function renderStatusScreen(status){
     ((history.chars==null)?'-':history.chars)+' 字符 · 约 '+
     ((history.estimated_tokens==null)?'-':history.estimated_tokens)+' tokens · '+
     (Math.round(percent*10)/10)+'%');
-  setText($('contextSummary'),'压缩摘要 '+(history.summary_chars||0)+' 字符');
+  var usage=(status.model&&status.model.usage)||{};
+  var summaryText='压缩摘要 '+(history.summary_chars||0)+' 字符';
+  if(usage.input_tokens||usage.output_tokens){
+    summaryText+=' · 最近用量 in/out '+((usage.input_tokens||0))+'/'+((usage.output_tokens||0));
+    if(usage.cache_read_tokens) summaryText+=' · 缓存读 '+(usage.cache_read_tokens||0);
+    if(usage.cache_creation_tokens) summaryText+=' · 缓存写 '+(usage.cache_creation_tokens||0);
+  }
+  setText($('contextSummary'),summaryText);
   setText($('statusTurn'),status.turn_busy?'运行中':'空闲');
   var backgrounds=status.backgrounds||[];
   setText($('statusBackground'),backgrounds.length?backgrounds.length+' 个':'0');
@@ -1437,6 +1444,8 @@ function handleEvent(ev){
     if(ev.token_count) text+=' chunks='+ev.token_count;
     if(ev.max_gap_ms) text+=' 最大间隔='+ev.max_gap_ms+'ms';
     if(ev.tail_gap_ms) text+=' 尾间隔='+ev.tail_gap_ms+'ms';
+    if(ev.input_tokens||ev.output_tokens) text+=' tokens='+(ev.input_tokens||0)+'/'+(ev.output_tokens||0);
+    if(ev.cache_read_tokens) text+=' cache_read='+ev.cache_read_tokens;
     if(ev.error) text+=' '+ev.error;
     modelMeta(text);
     return;

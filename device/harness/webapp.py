@@ -258,6 +258,11 @@ class WebTurnSink:
             "reasoning_chars": getattr(llm, "last_reasoning_chars", 0),
             "content_chars": getattr(llm, "last_content_chars", 0),
             "streamed": bool(getattr(llm, "last_streamed", False)),
+            "input_tokens": getattr(llm, "last_input_tokens", 0),
+            "output_tokens": getattr(llm, "last_output_tokens", 0),
+            "cache_read_tokens": getattr(llm, "last_cache_read_tokens", 0),
+            "cache_creation_tokens": getattr(
+                llm, "last_cache_creation_tokens", 0),
         }
         if error:
             value["error"] = str(error)[:600]
@@ -624,6 +629,14 @@ class WebApp:
                 "base_url": self.app.config.get("base_url", ""),
                 "model": self.app.config.get("model", ""),
                 "api_key_set": bool(self.app.config.secret("api_key")),
+                "usage": {
+                    "input_tokens": getattr(self.app.llm, "last_input_tokens", 0),
+                    "output_tokens": getattr(self.app.llm, "last_output_tokens", 0),
+                    "cache_read_tokens": getattr(
+                        self.app.llm, "last_cache_read_tokens", 0),
+                    "cache_creation_tokens": getattr(
+                        self.app.llm, "last_cache_creation_tokens", 0),
+                },
             },
             "thinking": {
                 "level": self.app.config.get("thinking_level", "high"),
@@ -696,6 +709,7 @@ class WebApp:
             "auto_run": bool(self.app.config.get("auto_run", False)),
             "auto_feedback": bool(self.app.config.get("auto_feedback", True)),
             "native_tools": bool(self.app.config.get("native_tools", True)),
+            "prompt_cache": bool(self.app.config.get("prompt_cache", True)),
             "background_execution": bool(
                 self.app.config.get("background_execution", True)),
             "background_max_jobs": int(
@@ -1175,6 +1189,10 @@ class WebApp:
                 self.app.agent._native_tools_failed = False
                 self.app.agent._system_tokens = None
                 self.app.agent._system_tokens_at = None
+            if "prompt_cache" in body:
+                self.app.config.set(
+                    "prompt_cache", _boolean(body, "prompt_cache"), save=False
+                )
             if "search_enabled" in body:
                 self.app.config.set(
                     "search_enabled", _boolean(body, "search_enabled"), save=False

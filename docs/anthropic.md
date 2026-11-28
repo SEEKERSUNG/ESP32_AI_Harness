@@ -19,10 +19,12 @@ api_provider = "anthropic"   # Anthropic Messages /v1/messages
 | 会话路由 | `x-opencode-session: ses_...`（OpenCode Go 的 Anthropic 端点要求；官方 Anthropic 会忽略未知头） |
 | `model` | `model` |
 | `max_tokens` | `max_tokens`（必填，默认 32768） |
-| `system` 消息 | 顶层 `system` 字符串；多条 system 合并 |
-| user/assistant 历史 | `messages`；空消息丢弃；开头孤立的 assistant 丢弃 |
+| `system` 消息 | 顶层 `system`；多条 system 合并后作为一个带 `cache_control` 的 text 块 |
+| user/assistant 历史 | `messages`；空消息丢弃；开头孤立的 assistant 丢弃；连续同角色纯文本合并 |
 | `temperature` | **不发送**。当前 Claude 模型对自定义采样参数返回 400 |
 | `thinking_level` | `adaptive` + `output_config.effort` |
+| `stream` | **始终为 true**（`complete()` 也走 SSE）；非流式长回答会阻塞 TLS 读取并触发看门狗复位 |
+| prompt caching | `prompt_cache=true`（默认）时在 system 末尾和最近一条 `tool_result` 末尾各打一个 `ephemeral` 断点；`usage.cache_read_input_tokens` 会回显到模型事件和状态页 |
 
 `thinking_level` 只有四档，与 OpenAI 兼容路径共用同一份持久化配置：
 
@@ -42,26 +44,44 @@ api_provider = "anthropic"   # Anthropic Messages /v1/messages
 
 支持 Anthropic SSE 事件：
 
-- `message_start`
-- `content_block_start`（text / thinking 初始块）
-- `content_block_delta`（`text_delta`、`thinking_delta`；`signature_delta` 忽略）
-- `content_block_stop`
-- `message_delta`（`stop_reason`）
+- `message_start`（读取 `message.usage`，包括缓存命中/写入）
+- `content_block_start`（text / thinking / tool_use 初始块）
+- `content_block_delta`（`text_delta`、`thinking_delta`、`signature_delta`、`input_json_delta`）
+- `content_block_stop`（此时才解析完整的工具参数 JSON）
+- `message_delta`（`stop_reason`、`stop_details`、`usage.output_tokens`）
 - `message_stop`
 - `ping`
 - `error`（`overloaded_error`、`rate_limit_error` 等）
+
+`tool_use` 的 `input` 在流式响应里是分段 `partial_json`：开始时按 `index` 建立空缓冲区，所有 `input_json_delta` 只追加不解析，收到 `content_block_stop` 才 `json.loads`；完全没有参数的工具（没有 delta）按 `{}` 处理，解析失败会带 `error` 标记交给 Agent 记录为工具错误，而不是把半截 JSON 当参数执行。
+
+`signature_delta` 会与 thinking 文本一起保存。原生工具调用回传 `tool_result` 时，assistant 消息会按原始顺序原样带回完整的 content blocks（text、带 `signature` 的 thinking、`redacted_thinking` 和 tool_use），满足扩展思考/交错思考下的回传要求；只有 `thinking_level=disabled` 时才省略 thinking 块。
 
 `stop_reason` 映射到现有 Harness 逻辑：
 
 | Anthropic | Harness |
 |---|---|
 | `end_turn` / `stop_sequence` | `stop` |
-| `max_tokens` | `length`（触发 token 预算重试） |
+| `max_tokens` | `length`（触发 token 预算重试；若在工具参数中途截断，清空工具调用并报错，绝不执行半截工具） |
 | `tool_use` | `tool_calls` |
-| `pause_turn` | `pause` |
+| `pause_turn` | `pause`（主对话请求直接报错不执行；原生搜索会带上 assistant `content` 最多续传 3 次） |
 | `refusal` | 直接报错，并带上 `stop_details.category` |
 
-正文开始后超时/断流标记为 partial，不自动重试；只有 reasoning 或没有正文时才允许通用重试，且重试保持当前 thinking 等级，不会降级。非流式响应从 `content` 数组中提取 `text` 和 `thinking` 块。
+正文开始后超时/断流标记为 partial，不自动重试；只有 reasoning 或没有正文时才允许通用重试，且重试保持当前 thinking 等级，不会降级。
+
+## 工具结果配对
+
+Anthropic 要求一条 assistant 消息中的每个 `tool_use` 都在紧邻的下一条 user 消息里有对应的 `tool_result`。转换器会：
+
+- 把同批所有工具结果合并到**一条** user 消息，`tool_result` 块放最前面；
+- 工具执行失败或超时时使用 `"is_error": true`，而不是只把 `status=error` 写进文本；
+- `tool_result.content` 为空时写成 `(no output)`；
+- 如果本地事件/通知恰好落在工具调用和结果之间，将其文本并入同一条 `tool_result` user 消息的末尾，不拆散配对；
+- 缺失的工具结果补一条 `is_error` 的占位，避免历史损坏导致整个请求 400；没有对应 `tool_use` 的孤立结果会被丢弃。
+
+## 用量
+
+每个流式响应都会记录 `input_tokens`、`output_tokens`、`cache_read_input_tokens`、`cache_creation_input_tokens`，并在串口 `--- model result`、网页模型事件和 `/api/status.model.usage` 中显示。`cache_read_input_tokens > 0` 表示提示缓存命中。
 
 ## 错误与重试
 
@@ -73,10 +93,11 @@ api_provider = "anthropic"   # Anthropic Messages /v1/messages
 
 ## 限制
 
-- 支持 Anthropic 原生 `tools`：内置工具和 MCP 工具以 `name`/`description`/`input_schema` 发送，流式解析 `content_block_start` 的 `tool_use` 与 `content_block_delta` 的 `input_json_delta`，并用 `tool_result` 内容块回传结果。端点拒绝原生 tools 时回退到文本 `tool` JSON 块；也可用 `/native off` 强制回退。
+- 支持 Anthropic 原生 `tools`：内置工具和 MCP 工具以 `name`/`description`/`input_schema` 发送，流式解析 `content_block_start` 的 `tool_use` 与 `content_block_delta` 的 `input_json_delta`，并在 `content_block_stop` 后才解析完整参数，用带 `is_error` 的 `tool_result` 内容块回传结果。端点拒绝原生 tools 时回退到文本 `tool` JSON 块；也可用 `/native off` 强制回退。
+- 支持 Messages API 显式提示缓存断点（`prompt_cache`，默认开启；DeepSeek 的 Anthropic 兼容端点自动跳过）。system 不足最小缓存长度时服务端会静默不缓存，不影响请求；如果某个第三方兼容网关不接受 `cache_control`，把 `prompt_cache` 设为 `false` 可恢复纯字符串 `system`。
 - 会发送 `x-opencode-session`，兼容 OpenCode Go 的 Anthropic 路由要求；官方 Anthropic 不使用该头但会忽略它。
 - 不支持 OAuth 登录；使用 `x-api-key`。需要 `Authorization: Bearer` 的 Anthropic 兼容代理请优先使用其 OpenAI 兼容端点，或调整代理的鉴权方式。
-- 不支持 Claude 的 Files、Batches、Managed Agents、prompt caching 显式断点等云端特性。
+- 不支持 Claude 的 Files、Batches、Managed Agents 等云端特性；提示缓存只使用请求级 `cache_control` 断点。
 - `__search` 在 `search_provider=auto` 时会复用 Anthropic `api_key` 调用 Messages API 的 `web_search_20250305` 服务端搜索工具，不需要单独的搜索 Key；网关不支持该工具时自动回退到 Bing 免 Key 搜索。若 Base URL 指向 DeepSeek 的 Anthropic 兼容端点，`auto` 改用 DeepSeek 的 `deepseek_web_search` 服务端工具（显式关闭 thinking），不再调用已移除的独立 DeepSeek Search API。搜索设置只有 `auto` 和 `bing` 两个值。
 - 当前模型可能拒绝自定义 `temperature`；Harness 在 Anthropic 路径始终省略该字段。
 

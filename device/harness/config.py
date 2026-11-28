@@ -42,6 +42,7 @@ DEFAULTS = {
     "summary_timeout": 300,
     "max_tool_calls": 16,
     "native_tools": True,
+    "prompt_cache": True,
     "max_format_retries": 1,
     "api_retries": 3,
     "api_retry_base_ms": 1000,

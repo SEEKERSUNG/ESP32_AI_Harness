@@ -123,9 +123,10 @@ def parse_response(text):
     return explanation, source
 
 
-def parse_response_ex(text):
+def parse_response_ex(text, truncated=False):
     """Return (explanation, source, timeout_s) for a python block."""
-    block = _find_fenced_block_info(text, ("py", "python", "micropython"))
+    block = _find_fenced_block_info(
+        text, ("py", "python", "micropython"), truncated)
     if block is None:
         return text.strip(), None, None
     body, start, end, info = block
@@ -250,21 +251,23 @@ def _trailing_timeout(text, end):
     return timeout, cursor - end
 
 
-def _find_fenced_block(text, language):
-    block = _find_fenced_block_info(text, language)
+def _find_fenced_block(text, language, truncated=False):
+    block = _find_fenced_block_info(text, language, truncated)
     if block is None:
         return None
     body, start, end, _ = block
     return body, start, end
 
 
-def _find_fenced_block_info(text, language):
+def _find_fenced_block_info(text, language, truncated=False):
     languages = (language,) if isinstance(language, str) else tuple(language)
     search_from = 0
+    fence_count = 0
     while True:
         start = text.find("```", search_from)
         if start < 0:
             return None
+        fence_count += 1
         cursor = start + 3
         while cursor < len(text) and text[cursor] in " \t":
             cursor += 1
@@ -291,7 +294,17 @@ def _find_fenced_block_info(text, language):
             end = text.find("```", body_start)
         if end < 0:
             if block_language in languages:
-                raise AgentError("Model returned an unterminated %s block" % block_language)
+                line_number = text.count("\n", 0, start) + 1
+                hint = ""
+                if truncated:
+                    hint = ("; the response stopped at max_tokens, so this is "
+                            "likely a truncated fence rather than a missing "
+                            "closing fence")
+                raise AgentError(
+                    "Model returned an unterminated %s block (fence #%s at "
+                    "line %s, language '%s', scanned %s chars%s)"
+                    % (block_language, fence_count, line_number,
+                       block_language or "(none)", len(text), hint))
             return None
         if block_language in languages:
             body = text[body_start:end]
@@ -302,8 +315,10 @@ def _find_fenced_block_info(text, language):
 
 
 def parse_tool_call(text, args_limit=2048, large_args_limit=None,
-                    mcp_args_limit=None, background_args_limit=None):
-    block = _find_fenced_block(text, ("tool", "tool_call", "toolcall", "tool-call"))
+                    mcp_args_limit=None, background_args_limit=None,
+                    truncated=False):
+    block = _find_fenced_block(
+        text, ("tool", "tool_call", "toolcall", "tool-call"), truncated)
     if block is None:
         return text.strip(), None
     body, start, end = block
@@ -364,8 +379,8 @@ def parse_tool_call(text, args_limit=2048, large_args_limit=None,
     return explanation, {"name": name, "args": args}
 
 
-def parse_skill_proposal(text, char_limit=16384):
-    block = _find_fenced_block(text, "skill")
+def parse_skill_proposal(text, char_limit=16384, truncated=False):
+    block = _find_fenced_block(text, "skill", truncated)
     if block is None:
         return text.strip(), None
     body, start, end = block
@@ -1768,6 +1783,7 @@ class Agent:
         self._system_tokens_at = None
         self._native_tools_failed = False
         self._last_reasoning = ""
+        self._context_warned = False
 
     def has_pending(self):
         return self.pending_source is not None or self.pending_skill is not None
@@ -2017,8 +2033,12 @@ class Agent:
             response = self._complete(messages, tools=tools)
             self._last_reasoning = getattr(self.llm, "last_reasoning", "") or ""
             native_calls = list(getattr(self.llm, "last_tool_calls", []) or [])
+            truncated = (
+                getattr(self.llm, "last_finish_reason", None) == "length"
+            )
             try:
-                code_explanation, source, code_timeout = parse_response_ex(response)
+                code_explanation, source, code_timeout = parse_response_ex(
+                    response, truncated=truncated)
                 if (source is not None and code_timeout is not None
                         and code_timeout > self._int_config("code_timeout_max_s", 300)):
                     raise AgentError(
@@ -2034,11 +2054,13 @@ class Agent:
                     # command. Allow worst-case JSON escaping overhead
                     # (quotes/newlines/non-ASCII) up to code_limit.
                     self.config.get("code_limit", 12288) * 6 + 4096,
+                    truncated,
                 )
                 _, skill_proposal = parse_skill_proposal(
-                    response, self.config.get("skill_char_limit", 16384)
+                    response, self.config.get("skill_char_limit", 16384),
+                    truncated,
                 )
-                if _find_fenced_block(response, "tooldef") is not None:
+                if _find_fenced_block(response, "tooldef", truncated) is not None:
                     raise AgentError(
                         "Custom tool definitions are no longer supported; "
                         "use a skill block or a python code block"
@@ -2348,18 +2370,28 @@ class Agent:
             role = message.get("role")
             content = message.get("content", "")
             if role == "tool" and message.get("tool_call_id"):
-                messages.append({
+                entry = {
                     "role": "tool",
                     "tool_call_id": message["tool_call_id"],
                     "name": message.get("name", ""),
                     "content": content if isinstance(content, str) else str(content),
-                })
+                }
+                if message.get("is_error"):
+                    entry["is_error"] = True
+                messages.append(entry)
             elif role == "assistant" and message.get("tool_calls"):
-                messages.append({
+                entry = {
                     "role": "assistant",
                     "content": content if isinstance(content, str) else "",
                     "tool_calls": message["tool_calls"],
-                })
+                }
+                thinking = message.get("thinking_blocks")
+                if isinstance(thinking, list) and thinking:
+                    entry["thinking_blocks"] = thinking
+                blocks = message.get("assistant_blocks")
+                if isinstance(blocks, list) and blocks:
+                    entry["assistant_blocks"] = blocks
+                messages.append(entry)
             elif role in ("user", "assistant") and isinstance(content, str):
                 messages.append({"role": role, "content": content})
         return messages
@@ -2545,7 +2577,9 @@ class Agent:
         if self.on_model_start is not None:
             self.on_model_start()
         try:
-            if self.config.get("stream", True) and hasattr(self.llm, "complete_stream"):
+            if ((self.config.get("stream", True)
+                 or getattr(self.llm, "force_stream", False))
+                    and hasattr(self.llm, "complete_stream")):
                 kwargs = {
                     "on_reasoning": self.on_reasoning,
                     "on_content": self.on_content,
@@ -2630,13 +2664,24 @@ class Agent:
 
     def _native_exchange_messages(self, explanation, calls, results,
                                   reasoning=""):
-        messages = [{
+        assistant = {
             "role": "assistant",
             "content": explanation or "",
             "tool_calls": calls,
             "reasoning": reasoning,
             "_native": True,
-        }]
+        }
+        # Anthropic requires the assistant content blocks (thinking blocks
+        # with signatures, text and tool_use, in their original order) to be
+        # replayed unchanged when the following user message carries tool
+        # results. Other providers never set these attributes.
+        raw_blocks = list(getattr(self.llm, "last_assistant_blocks", None) or [])
+        if raw_blocks:
+            assistant["assistant_blocks"] = raw_blocks
+        thinking = list(getattr(self.llm, "last_thinking_blocks", None) or [])
+        if thinking:
+            assistant["thinking_blocks"] = thinking
+        messages = [assistant]
         for call, result in zip(calls, results):
             messages.append({
                 "role": "tool",
@@ -2644,6 +2689,10 @@ class Agent:
                 "name": call.get("name"),
                 "content": result.observation(self._tool_output_limit(
                     call.get("name", ""))),
+                # Machine-readable failure marker for Anthropic tool_result;
+                # the textual status= line stays for other providers.
+                "is_error": bool(getattr(result, "timed_out", False)
+                                 or not getattr(result, "ok", True)),
                 "_native": True,
             })
         return messages
@@ -3745,36 +3794,50 @@ class Agent:
         )
         max_tokens = max(256, min(
             self._int_config("search_native_max_tokens", 1024), 4096))
+        messages = [{
+            "role": "user",
+            "content": "Search the web for the query below and answer "
+                       "with a concise factual summary. Include source "
+                       "URLs.\nQuery: " + query,
+        }]
         payload = {
             "model": model,
             "max_tokens": max_tokens,
-            "messages": [{
-                "role": "user",
-                "content": "Search the web for the query below and answer "
-                           "with a concise factual summary. Include source "
-                           "URLs.\nQuery: " + query,
-            }],
+            "messages": messages,
             "tools": [{
                 "type": tool_type,
                 "name": "web_search",
                 "max_uses": max(1, min(count, 10)),
             }],
         }
-        data, error = self._search_post(
-            endpoint,
-            payload,
-            {
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-            },
-        )
-        if error:
-            return ToolResult(False, "", "Anthropic web search " + error, 0)
-        if data.get("type") == "error":
-            return ToolResult(
-                False, "", "Anthropic web search failed: %s"
-                % self._search_error_message(data), 0
-            )
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+        }
+        data = None
+        # Server tools may pause their own loop (pause_turn). Echo the
+        # assistant content back so the server-side search can finish, but
+        # bound the continuation so a stuck endpoint cannot loop forever.
+        for _ in range(3):
+            data, error = self._search_post(endpoint, payload, headers)
+            if error:
+                return ToolResult(
+                    False, "", "Anthropic web search " + error, 0)
+            if data.get("type") == "error":
+                return ToolResult(
+                    False, "", "Anthropic web search failed: %s"
+                    % self._search_error_message(data), 0
+                )
+            if data.get("stop_reason") != "pause_turn":
+                break
+            content = data.get("content")
+            if not isinstance(content, list) or not content:
+                break
+            messages.append({"role": "assistant", "content": content})
+            messages.append({
+                "role": "user",
+                "content": "Continue the search and provide the final summary.",
+            })
         results, answer = self._parse_anthropic_search(data)
         if not results and not answer:
             return ToolResult(
@@ -4524,7 +4587,9 @@ class Agent:
             raise AgentError("Compaction is already running")
         if not self.history:
             raise AgentError("Conversation is empty")
-        return self._compact_history()
+        result = self._compact_history()
+        self._context_warned = False
+        return result
 
     def _system_tokens_now(self):
         tokens = estimate_tokens(self._system_content()) + 4
@@ -4579,6 +4644,7 @@ class Agent:
         self.turns = 0
         self.recovered_pending = False
         self.recovered_execution = False
+        self._context_warned = False
         self._persist_error = False
         if self.conversation is not None:
             try:
@@ -4658,9 +4724,6 @@ class Agent:
             pass
 
     def _maybe_auto_compact(self, extra_messages=None):
-        if not self.config.get("auto_compact", True) or self._compacting:
-            return False
-        threshold = self.config.get("auto_compact_tokens", 150000)
         extra_messages = extra_messages or []
         tokens = (
             estimate_tokens(self._system_content())
@@ -4668,6 +4731,31 @@ class Agent:
             + self._messages_tokens(self.history)
             + self._messages_tokens(extra_messages)
         )
+        context_limit = self.config.get("context_tokens", 200000)
+        auto_compact = bool(self.config.get("auto_compact", True))
+        if not auto_compact or self._compacting:
+            # Without automatic compaction the next request may be rejected
+            # by the provider (or trimmed). Warn before that happens.
+            if (tokens >= context_limit * 9 // 10
+                    and not self._context_warned):
+                self._context_warned = True
+                self._notice(
+                    "Context is about %s of the %s-token limit; start a new "
+                    "conversation, run /clear, or enable auto-compact before "
+                    "the provider rejects the request."
+                    % (tokens, context_limit)
+                )
+            return False
+        threshold = self.config.get("auto_compact_tokens", 150000)
+        if (tokens < threshold and tokens >= context_limit * 9 // 10
+                and not self._context_warned):
+            self._context_warned = True
+            self._notice(
+                "Context is about %s of the %s-token limit; the next "
+                "auto-compact threshold is %s. Consider a new conversation "
+                "or /clear if the task is finished."
+                % (tokens, context_limit, threshold)
+            )
         if tokens < threshold:
             return False
         if len(self.history) <= self.config.get("compact_keep_messages", 4):
@@ -4677,14 +4765,18 @@ class Agent:
             % (tokens, threshold)
         )
         try:
-            return self._compact_history()
+            result = self._compact_history()
+            self._context_warned = False
+            return result
         except Exception as exc:
             self._notice("Automatic compaction failed: %s" % exc)
             return False
 
     def _summary_request(self, messages, max_tokens):
         timeout = self._int_config("summary_timeout", 300)
-        if self.config.get("stream", True) and hasattr(self.llm, "complete_stream"):
+        if ((self.config.get("stream", True)
+             or getattr(self.llm, "force_stream", False))
+                and hasattr(self.llm, "complete_stream")):
             return self.llm.complete_stream(
                 messages,
                 max_tokens=max_tokens,

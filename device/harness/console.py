@@ -1854,15 +1854,21 @@ class Application:
         max_gap_ms = getattr(self.llm, "last_max_gap_ms", 0)
         tail_gap_ms = getattr(self.llm, "last_tail_gap_ms", 0)
         streamed = getattr(self.llm, "last_streamed", False)
+        input_tokens = getattr(self.llm, "last_input_tokens", 0)
+        output_tokens = getattr(self.llm, "last_output_tokens", 0)
+        cache_read = getattr(self.llm, "last_cache_read_tokens", 0)
+        cache_write = getattr(self.llm, "last_cache_creation_tokens", 0)
         status = "error" if error else "ok"
         self.ui.line("--- model result: status=%s stream=%s finish=%s elapsed=%sms "
                      "header_timeout=%sms idle=%sms event_idle=%sms | "
                      "headers=%sms first_token=%sms chunks=%s max_gap=%sms "
-                     "tail_gap=%sms | reasoning=%s chars content=%s chars body=%s chars ---" % (
+                     "tail_gap=%sms | reasoning=%s chars content=%s chars body=%s chars "
+                     "| tokens in/out=%s/%s cache read/write=%s/%s ---" % (
                          status, streamed, finish, elapsed, timeout_ms,
                          idle_timeout_ms, event_timeout_ms,
                          headers_ms, first_token_ms, token_count, max_gap_ms,
-                         tail_gap_ms, reasoning_chars, content_chars, response_chars))
+                         tail_gap_ms, reasoning_chars, content_chars, response_chars,
+                         input_tokens, output_tokens, cache_read, cache_write))
         if error:
             self.ui.line("model error: %s" % error)
         if self.config.get("show_thinking") and not streamed:

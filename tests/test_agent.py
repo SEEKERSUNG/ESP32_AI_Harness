@@ -1906,6 +1906,59 @@ class AgentTests(unittest.TestCase):
             self.assertFalse(any(
                 message.get("role") == "tool" for message in agent.history))
 
+    def test_native_tool_errors_and_thinking_blocks_are_forwarded(self):
+        class NativeLLM:
+            supports_native_tools = True
+            last_thinking_blocks = [{
+                "type": "thinking",
+                "thinking": "plan",
+                "signature": "sig-1",
+            }]
+
+            def __init__(self):
+                self.calls = []
+                self.last_tool_calls = []
+                self.responses = ["", "done"]
+
+            def complete(self, messages, max_tokens=None, thinking_level=None,
+                         allow_truncated=False, timeout=None, tools=None):
+                self.calls.append(messages)
+                if len(self.calls) == 1:
+                    self.last_tool_calls = [{
+                        "id": "call_1",
+                        "name": "__missing_tool",
+                        "args": {},
+                        "error": "",
+                    }]
+                else:
+                    self.last_tool_calls = []
+                return self.responses.pop(0)
+
+        llm = NativeLLM()
+        agent = Agent(DummyConfig(stream=False), llm, DummyBoard())
+        explanation, has_code = agent.ask("run the missing tool")
+        self.assertEqual("done", explanation)
+        self.assertFalse(has_code)
+        second = llm.calls[1]
+        assistant = [
+            message for message in second
+            if message.get("role") == "assistant"
+            and message.get("tool_calls")
+        ][0]
+        self.assertEqual("sig-1", assistant["thinking_blocks"][0]["signature"])
+        tool = [message for message in second if message.get("role") == "tool"][0]
+        self.assertTrue(tool["is_error"])
+
+    def test_unterminated_fence_reports_position_and_truncation(self):
+        with self.assertRaises(AgentError) as caught:
+            parse_response_ex(
+                "intro\n```python\nprint(1)", truncated=True)
+        text = str(caught.exception)
+        self.assertIn("unterminated python block", text)
+        self.assertIn("fence #1", text)
+        self.assertIn("line 2", text)
+        self.assertIn("max_tokens", text)
+
     def test_native_tools_fall_back_when_endpoint_rejects_them(self):
         from harness.http_client import HTTPResponse
         from harness.llm import OpenAIClient
